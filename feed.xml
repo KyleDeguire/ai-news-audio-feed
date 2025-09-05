@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>AI News Audio Feed</title>
+    <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
+    <description>Weekly agent-generated AI news summaries as audio</description>
+    <language>en-us</language>
+    <lastBuildDate>Thu, 04 Sep 2025 17:00:00 GMT</lastBuildDate>
+
+    <!-- Example episode. Replace fields after you upload an MP3. -->
+    <item>
+      <title>Week 1 - AI News Summary</title>
+      <description>First test episode</description>
+      <pubDate>Thu, 04 Sep 2025 17:00:00 GMT</pubDate>
+      <guid isPermaLink="false">ai-news-week-1</guid>
+      <enclosure
+        url="https://kyledeguire.github.io/ai-news-audio-feed/audio/week1.mp3"
+        length="123456"
+        type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>
