@@ -1,22 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <title>AI News Audio Feed</title>
-    <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
-    <description>Weekly agent-generated AI news summaries as audio</description>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+<channel>
+    <title>AI News Weekly - Executive Briefing</title>
+    <description>Weekly AI news analysis and strategic insights for business leaders</description>
+    <link>https://yourusername.github.io/ai-news-feed/</link>
     <language>en-us</language>
-    <lastBuildDate>Thu, 04 Sep 2025 17:00:00 GMT</lastBuildDate>
-
-    <!-- Example episode. Replace fields after you upload an MP3. -->
+    <lastBuildDate>Sat, 13 Sep 2025 22:03:59 GMT</lastBuildDate>
+    
     <item>
-      <title>Week 1 - AI News Summary</title>
-      <description>First test episode</description>
-      <pubDate>Thu, 04 Sep 2025 17:00:00 GMT</pubDate>
-      <guid isPermaLink="false">ai-news-week-1</guid>
-      <enclosure
-        url="https://kyledeguire.github.io/ai-news-audio-feed/audio/TestSound.mp3"
-        length="84417"
-        type="audio/mpeg"/>
+        <title>AI Executive Brief - September 13, 2025</title>
+        <description>Good day, 
+
+Today we'll be covering key AI developments, market implications, strategic insights, emerging trends, and a forward outlook based on recent news articles and prominent AI YouTube channels. 
+
+**Key Developments:** 
+
+This week's most significant breakthroughs come from the YouTube channels of Matt Wolfe, Matthew Berman, and AI Advantage. Wolfe's content focuses on AI-enabled apps, suggesting a shift in the market towards AI-driven solutions. Meanwhile, Berman's videos touch on the gro...</description>
+        <enclosure url="https://yourusername.github.io/ai-news-feed/ai_news_20250913.mp3" length="0" type="audio/mpeg"/>
+        <pubDate>Sat, 13 Sep 2025 22:03:59 GMT</pubDate>
+        <guid>ai-brief-2025-09-13</guid>
     </item>
-  </channel>
+</channel>
 </rss>
