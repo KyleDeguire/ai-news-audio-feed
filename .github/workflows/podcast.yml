@@ -1,13 +1,13 @@
-name: Update podcast feed
+name: Weekly AI Executive Brief
 
 on:
-  push:
-    paths:
-      - "audio/*.mp3"
-  workflow_dispatch:
+  schedule:
+    # 14:05 UTC = 08:05 MT during DST (MDT), 07:05 MST otherwise.
+    - cron: '5 14 * * 1'
+  workflow_dispatch: {}
 
 permissions:
-  contents: write   # allow workflow to commit feed.xml changes
+  contents: write
 
 jobs:
   build:
@@ -21,9 +21,23 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Run feed updater
+      - name: Install deps
         run: |
-          python3 scripts/update_feed.py \
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      # --- Generate audio + transcript
+      - name: Generate MP3 + transcript
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: |
+          python scripts/generate_brief.py
+
+      # --- Update RSS feed to point at the latest audio
+      - name: Update feed.xml
+        run: |
+          python scripts/update_feed.py \
             --repo-url "https://kyledeguire.github.io/ai-news-audio-feed" \
             --audio-dir "audio" \
             --feed "feed.xml" \
@@ -31,8 +45,63 @@ jobs:
             --show-description "Weekly AI news analysis and strategic insights for business leaders" \
             --language "en-us"
 
-      - name: Commit changes
+      # --- Commit changes (audio/*.mp3, audio/*.txt, feed.xml)
+      - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: auto-update feed.xml for latest audio"
-          file_pattern: feed.xml
+          commit_message: "chore: weekly brief – audio + transcript + feed"
+          file_pattern: |
+            audio/*.mp3
+            audio/*.txt
+            feed.xml
+
+      # --- Find latest transcript metadata for email
+      - name: Find latest transcript & build email meta
+        id: latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          LATEST_TXT=$(ls -t audio/*.txt | head -n1)
+          LATEST_MP3="${LATEST_TXT%.txt}.mp3"
+          STAMP="${LATEST_TXT##*_}"      # e.g., 20250915.txt
+          STAMP="${STAMP%.txt}"          # 20250915
+          READABLE_DATE=$(python - <<'PY'
+import datetime, os
+s = os.environ["STAMP"]
+d = datetime.datetime.strptime(s, "%Y%m%d")
+print(d.strftime("%A, %B %d, %Y"))
+PY
+)
+          echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
+          echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
+          echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
+
+      # (Optional) Put the whole transcript into the email body
+      - name: Read transcript into env
+        run: |
+          echo 'TRANSCRIPT<<EOF' >> $GITHUB_ENV
+          cat "${{ steps.latest.outputs.txt }}" >> $GITHUB_ENV
+          echo 'EOF' >> $GITHUB_ENV
+
+      # --- Email the transcript (attachment + body)
+      - name: Email transcript
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "AI Executive Brief transcript — ${{ steps.latest.outputs.date_readable }}"
+          from: ${{ secrets.EMAIL_FROM }}
+          to: ${{ secrets.EMAIL_TO }}
+          secure: true
+          attachments: ${{ steps.latest.outputs.txt }}
+          body: |
+            New episode transcript attached.
+
+            Episode date: ${{ steps.latest.outputs.date_readable }}
+            Feed: https://kyledeguire.github.io/ai-news-audio-feed/feed.xml
+            Audio: https://kyledeguire.github.io/ai-news-audio-feed/audio/${{ steps.latest.outputs.mp3file }}
+
+            ---- Transcript ----
+            ${{ env.TRANSCRIPT }}
