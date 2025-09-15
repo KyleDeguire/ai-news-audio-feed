@@ -83,11 +83,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          DELIM="$(python - <<'PY'
-import secrets
-print(secrets.token_hex(16))
-PY
-)"
+          DELIM="$(python -c 'import secrets; print(secrets.token_hex(16))')"
           {
             echo "TRANSCRIPT<<${DELIM}"
             cat "${{ steps.latest.outputs.txt }}"
@@ -107,9 +103,10 @@ PY
           to: ${{ secrets.EMAIL_TO }}
           subject: "AI Executive Brief transcript — ${{ steps.latest.outputs.date_readable }}"
           attachments: ${{ steps.latest.outputs.txt }}
-          # For 465 (SSL): secure true, starttls false; For 587 (TLS): secure false, starttls true
-          secure: ${{ secrets.SMTP_PORT == '465' }}
-          starttls: ${{ secrets.SMTP_PORT == '587' }}
+          # If you use port 465 (SSL): set secure: true, starttls: false
+          # If you use port 587 (TLS): set secure: false, starttls: true
+          secure: false
+          starttls: true
           body: |
             New episode transcript attached.
 
