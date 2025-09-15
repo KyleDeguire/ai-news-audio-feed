@@ -32,7 +32,6 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          # Optional: if you saved your chosen 11labs voice id as a secret
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: |
           python scripts/generate_brief.py
@@ -58,35 +57,34 @@ jobs:
             audio/*.txt
             feed.xml
 
-      # --- Find latest transcript & build email meta (safe heredoc)
+      # --- Find latest transcript & build email meta (pure bash; no heredocs)
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
         run: |
           set -euo pipefail
-          if ls -t audio/*.txt >/dev/null 2>&1; then
-            LATEST_TXT=$(ls -t audio/*.txt | head -n1)
+          shopt -s nullglob
+          files=(audio/*.txt)
+          if (( ${#files[@]} )); then
+            LATEST_TXT=$(ls -t "${files[@]}" | head -n1)
             LATEST_MP3="${LATEST_TXT%.txt}.mp3"
-            STAMP="${LATEST_TXT##*_}"      # e.g., 20250915.txt -> 20250915
+            STAMP="${LATEST_TXT##*_}"          # ai_news_YYYYMMDD.txt -> YYYYMMDD
             STAMP="${STAMP%.txt}"
 
-            READABLE_DATE=$(python - <<'PY'
-import os, datetime
-s = os.environ["STAMP"]
-d = datetime.datetime.strptime(s, "%Y%m%d")
-print(d.strftime("%A, %B %d, %Y"))
-PY
-)
+            # Format YYYYMMDD -> "Monday, September 15, 2025"
+            READABLE_DATE=$(date -d "${STAMP:0:4}-${STAMP:4:2}-${STAMP:6:2}" '+%A, %B %d, %Y')
 
-            echo "found=true" >> "$GITHUB_OUTPUT"
-            echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
-            echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
-            echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
+            {
+              echo "found=true"
+              echo "txt=$LATEST_TXT"
+              echo "mp3file=$(basename "$LATEST_MP3")"
+              echo "date_readable=$READABLE_DATE"
+            } >> "$GITHUB_OUTPUT"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # --- Read transcript into $GITHUB_ENV using a unique delimiter
+      # --- Read transcript into env with a unique delimiter (safe)
       - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
