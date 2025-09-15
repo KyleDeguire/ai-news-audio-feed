@@ -3,6 +3,13 @@
   <channel>
     <itunes:image href="https://kyledeguire.github.io/ai-news-audio-feed/artwork/cover.jpg"/>
 
+    <!-- Apple directory metadata -->
+    <itunes:category text="Technology">
+      <itunes:category text="Tech News"/>
+    </itunes:category>
+    <itunes:explicit>false</itunes:explicit>
+
+    <!-- Latest episode -->
     <item>
       <title>AI Executive Brief - 14 Sep, 2025</title>
       <description>Executive Briefing: AI Market Trends and Strategic Insights</description>
@@ -15,6 +22,7 @@
       <itunes:episodeType>full</itunes:episodeType>
     </item>
 
+    <!-- Channel metadata -->
     <title>AI News Weekly – Executive Briefing</title>
     <description>Weekly AI news analysis and strategic insights for business leaders</description>
     <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
