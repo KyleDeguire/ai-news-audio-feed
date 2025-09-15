@@ -4,7 +4,7 @@ on:
   schedule:
     # 14:05 UTC = 08:05 MT during DST (MDT), 07:05 MST otherwise
     - cron: '5 14 * * 1'
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -12,7 +12,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,16 +26,20 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Generate audio + transcript (.mp3 and .txt in audio/)
+      # ------------------------------------------------------------
+      # Generate audio + transcript (.mp3 and .txt in audio/)
+      # ------------------------------------------------------------
       - name: Generate MP3 + transcript
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
+          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}   # optional; falls back to VOICE_NAME in script
         run: |
           python scripts/generate_brief.py
 
-      # --- Update RSS feed to the latest audio
+      # ------------------------------------------------------------
+      # Update RSS feed to point at the latest audio
+      # ------------------------------------------------------------
       - name: Update feed.xml
         run: |
           python scripts/update_feed.py \
@@ -47,7 +50,9 @@ jobs:
             --show-description "Weekly AI news analysis and strategic insights for business leaders" \
             --language "en-us"
 
-      # --- Commit changes (audio/*.mp3, audio/*.txt, feed.xml)
+      # ------------------------------------------------------------
+      # Commit any new files (audio/*.mp3, audio/*.txt, feed.xml)
+      # ------------------------------------------------------------
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
@@ -57,50 +62,58 @@ jobs:
             audio/*.txt
             feed.xml
 
-      # --- Find latest transcript & build email meta (pure bash; no heredocs)
+      # ------------------------------------------------------------
+      # Find latest transcript and build some metadata for the email
+      # ------------------------------------------------------------
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(audio/*.txt)
-          if (( ${#files[@]} )); then
-            LATEST_TXT=$(ls -t "${files[@]}" | head -n1)
-            LATEST_MP3="${LATEST_TXT%.txt}.mp3"
-            STAMP="${LATEST_TXT##*_}"          # ai_news_YYYYMMDD.txt -> YYYYMMDD
-            STAMP="${STAMP%.txt}"
-
-            # Format YYYYMMDD -> "Monday, September 15, 2025"
-            READABLE_DATE=$(date -d "${STAMP:0:4}-${STAMP:4:2}-${STAMP:6:2}" '+%A, %B %d, %Y')
-
-            {
-              echo "found=true"
-              echo "txt=$LATEST_TXT"
-              echo "mp3file=$(basename "$LATEST_MP3")"
-              echo "date_readable=$READABLE_DATE"
-            } >> "$GITHUB_OUTPUT"
-          else
+          if ! ls -1 audio/*.txt >/dev/null 2>&1; then
             echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
+          LATEST_MP3="${LATEST_TXT%.txt}.mp3"
+          STAMP="${LATEST_TXT##*_}"         # e.g., ai_news_20250915.txt -> 20250915.txt
+          STAMP="${STAMP%.txt}"             # -> 20250915
 
-      # --- Read transcript into env with a unique delimiter (safe)
+          # Make a nice date (Monday, Sep 15, 2025) using Python for portability
+          READABLE_DATE="$(python - <<'PY'
+import datetime, os
+s = os.environ["STAMP"]
+d = datetime.datetime.strptime(s, "%Y%m%d")
+print(d.strftime("%A, %b %d, %Y"))
+PY
+)"
+          echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
+          echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
+          echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+        env:
+          STAMP: ""
+
+      # ------------------------------------------------------------
+      # Read transcript into $GITHUB_ENV using a safe, unique delimiter
+      # (only if we actually found a transcript)
+      # ------------------------------------------------------------
       - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          DELIM=$(python - <<'PY'
-import uuid; print(uuid.uuid4().hex)
-PY
-)
+          # robust, YAML-safe delimiter (no nested heredocs)
+          DELIM="$(uuidgen | tr -d '-')"
           {
             echo "TRANSCRIPT<<$DELIM"
             cat "${{ steps.latest.outputs.txt }}"
             echo "$DELIM"
           } >> "$GITHUB_ENV"
 
-      # --- Email the transcript (attachment + body)
+      # ------------------------------------------------------------
+      # Email the transcript (attachment + inline body)
+      # ------------------------------------------------------------
       - name: Email transcript
         if: steps.latest.outputs.found == 'true'
         uses: dawidd6/action-send-mail@v3
