@@ -1,10 +1,17 @@
 name: Weekly AI Executive Brief
 
 on:
-  schedule:
-    # 14:05 UTC = 08:05 MT during DST (MDT), 07:05 MST otherwise
-    - cron: '5 14 * * 1'
+  # Manual button (if/when GitHub shows it)
   workflow_dispatch: {}
+
+  # Scheduled every Monday 08:05 Mountain Time (14:05 UTC)
+  schedule:
+    - cron: '5 14 * * 1'
+
+  # Safety: allow a push to a single file to force a run whenever you want
+  push:
+    paths:
+      - '.github/force-run'
 
 permissions:
   contents: write
