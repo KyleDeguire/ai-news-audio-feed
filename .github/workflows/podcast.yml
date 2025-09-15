@@ -27,7 +27,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Generate audio + transcript (.mp3 and .txt in audio/)
+      # --- Generate audio (Hannah) + transcript (.txt in audio/)
       - name: Generate MP3 + transcript
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -47,7 +47,7 @@ jobs:
             --show-description "Weekly AI news analysis and strategic insights for business leaders" \
             --language "en-us"
 
-      # --- Commit changes (audio/*.mp3, audio/*.txt, feed.xml)
+      # --- Commit changes (audio + feed).  Keep .txt for repo history (optional).
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
@@ -55,6 +55,7 @@ jobs:
           file_pattern: |
             audio/*.mp3
             audio/*.txt
+            audio/*.docx
             feed.xml
 
       # --- Find latest transcript and build email meta
@@ -73,6 +74,7 @@ jobs:
 
           LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
           LATEST_MP3="${LATEST_TXT%.txt}.mp3"
+          LATEST_DOCX="${LATEST_TXT%.txt}.docx"
 
           base="$(basename "$LATEST_TXT")"
           STAMP="${base##*_}"       # e.g., ai_news_20250915.txt
@@ -81,11 +83,12 @@ jobs:
           READABLE_DATE="$(python -c "import datetime; s='$STAMP'; d=datetime.datetime.strptime(s, '%Y%m%d'); print(d.strftime('%A, %B %d, %Y'))")"
 
           echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
+          echo "docx=$LATEST_DOCX" >> "$GITHUB_OUTPUT"
           echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
           echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
           echo "found=true" >> "$GITHUB_OUTPUT"
 
-      # --- Read transcript into env for inline email body
+      # --- Read transcript into env for inline email body (clickable links)
       - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
@@ -98,7 +101,13 @@ jobs:
             echo "$DELIM"
           } >> "$GITHUB_ENV"
 
-      # --- Email transcript (inline body + attachment)
+      # --- Build .docx transcript with live links
+      - name: Build .docx transcript
+        if: steps.latest.outputs.found == 'true'
+        run: |
+          python scripts/make_docx.py "${{ steps.latest.outputs.txt }}" "${{ steps.latest.outputs.docx }}"
+
+      # --- Email transcript (inline body + .docx attachment only)
       - name: Email transcript
         if: steps.latest.outputs.found == 'true'
         uses: dawidd6/action-send-mail@v3
@@ -111,9 +120,9 @@ jobs:
           from: ${{ secrets.EMAIL_FROM }}
           to: ${{ secrets.EMAIL_TO }}
           subject: "AI Executive Brief transcript — ${{ steps.latest.outputs.date_readable }}"
-          attachments: ${{ steps.latest.outputs.txt }}
+          attachments: ${{ steps.latest.outputs.docx }}
           body: |
-            New episode transcript below (and attached).
+            New episode transcript below (and attached as .docx).
 
             Episode date: ${{ steps.latest.outputs.date_readable }}
             Feed: https://kyledeguire.github.io/ai-news-audio-feed/feed.xml
