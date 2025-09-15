@@ -87,12 +87,13 @@ jobs:
           echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
           echo "found=true" >> "$GITHUB_OUTPUT"
 
-      # 7) Read transcript into env (collision-proof delimiter)
+      # 7) Read transcript into env (collision-proof delimiter)  << ONLY CHANGE YOU ASKED FOR >>
       - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
         run: |
           set -euo pipefail
+          # Unique delimiter per run; cannot appear in content
           DELIM="__TRANSCRIPT_$(date +%s%N)_$$__"
           {
             printf 'TRANSCRIPT<<%s\n' "$DELIM"
