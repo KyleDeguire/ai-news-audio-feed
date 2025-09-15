@@ -4,7 +4,7 @@ on:
   schedule:
     # 14:05 UTC = 08:05 MT during DST (MDT), 07:05 MST otherwise
     - cron: '5 14 * * 1'
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -12,11 +12,12 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
+      # 1) Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2) Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -27,16 +28,17 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Generate audio (.mp3) + transcript (.txt) in audio/
+      # 3) Generate audio + transcript (.mp3 to audio/, .txt to audio/)
       - name: Generate MP3 + transcript
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }} # optional; script can fall back to VOICE_NAME
+          # Optional: if you set this, it overrides VOICE_NAME in the script
+          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: |
           python scripts/generate_brief.py
 
-      # --- Update RSS feed to newest audio file
+      # 4) Update RSS feed to latest audio
       - name: Update feed.xml
         run: |
           python scripts/update_feed.py \
@@ -47,7 +49,7 @@ jobs:
             --show-description "Weekly AI news analysis and strategic insights for business leaders" \
             --language "en-us"
 
-      # --- Commit ONLY mp3 + feed.xml (no .txt/.docx in repo)
+      # 5) Commit only MP3 + feed (intentionally DO NOT commit .txt)
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
@@ -56,52 +58,65 @@ jobs:
             audio/*.mp3
             feed.xml
 
-      # --- Find latest transcript + mp3 and build readable date
-      - name: Find latest transcript & build meta
+      # 6) Find latest transcript + build metadata for email
+      - name: Find latest transcript & build email meta
         id: latest
         shell: bash
         run: |
           set -euo pipefail
-          if ! ls audio/*.txt >/dev/null 2>&1; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          # Confirm we have at least one transcript
+          if ! ls -1 audio/*.txt >/dev/null 2>&1; then
+            echo "No transcript .txt found in audio/. Exiting early."
+            exit 1
           fi
+
           LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
           LATEST_MP3="${LATEST_TXT%.txt}.mp3"
-          STAMP="${LATEST_TXT##*_}"          # e.g., 20250915.txt
-          STAMP="${STAMP%.txt}"               # -> 20250915
-          echo "txt=$LATEST_TXT"           >> "$GITHUB_OUTPUT"
-          echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
-          echo "stamp=$STAMP"              >> "$GITHUB_OUTPUT"
-          python - <<'PY' >> "$GITHUB_OUTPUT"
-import os, datetime
+
+          # Extract yyyymmdd stamp from filename tail (e.g. *_20250915.txt)
+          STAMP="${LATEST_TXT##*_}"
+          STAMP="${STAMP%.txt}"
+
+          # Nice date via Python for portability
+          READABLE_DATE="$(python - <<'PY'
+import datetime, os
 s = os.environ["STAMP"]
 d = datetime.datetime.strptime(s, "%Y%m%d")
-print(f"date_readable={d.strftime('%A, %B %d, %Y')}")
+print(d.strftime("%A, %B %d, %Y"))
 PY
-        env:
-          STAMP: ""
+)"
 
-      # --- Read transcript into $GITHUB_ENV safely (for email body)
+          echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
+          echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
+          echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
+
+      # 7) Load transcript into $GITHUB_ENV safely (no delimiter mismatch)
       - name: Read transcript into env
         if: steps.latest.outputs.txt
         shell: bash
         run: |
           set -euo pipefail
+          DELIM="__TRANSCRIPT_$(date +%s%N)__"
           {
-            echo 'TRANSCRIPT<<EOF_TRANSCRIPT'
+            printf 'TRANSCRIPT<<%s\n' "$DELIM"
             cat "${{ steps.latest.outputs.txt }}"
-            echo 'EOF_TRANSCRIPT'
+            printf '%s\n' "$DELIM"
           } >> "$GITHUB_ENV"
 
-      # --- Build .docx transcript (not committed)
+      # 8) Build a .docx version of the transcript (not committed)
       - name: Build .docx transcript
+        id: docx
         if: steps.latest.outputs.txt
+        shell: bash
         run: |
-          python scripts/make_docx.py "${{ steps.latest.outputs.txt }}" "audio/${{ steps.latest.outputs.mp3file }}"
-        # make_docx.py should write a .docx next to the .txt (e.g., same stem)
+          set -euo pipefail
+          IN_TXT="${{ steps.latest.outputs.txt }}"
+          OUT_DOCX="${IN_TXT%.txt}.docx"
+          TITLE="AI Executive Brief — ${{ steps.latest.outputs.date_readable }}"
+          python scripts/make_docx.py "$IN_TXT" "$OUT_DOCX" "$TITLE"
+          echo "docx=$OUT_DOCX" >> "$GITHUB_OUTPUT"
 
-      # --- Email transcript (HTML body with clickable links) + attach .docx only
+      # 9) Email: body includes full transcript (with links), attach .docx
       - name: Email transcript
         if: steps.latest.outputs.txt
         uses: dawidd6/action-send-mail@v3
@@ -110,28 +125,18 @@ PY
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          secure: true
           from: ${{ secrets.EMAIL_FROM }}
           to: ${{ secrets.EMAIL_TO }}
           subject: "AI Executive Brief — ${{ steps.latest.outputs.date_readable }}"
-          # Attach only the .docx (no .txt)
-          attachments: ${{ steps.latest.outputs.txt && format('{0}', steps.latest.outputs.txt).replace('.txt','.docx') || '' }}
-          html_body: |
-            <p>New episode is ready.</p>
+          secure: true
+          attachments: ${{ steps.docx.outputs.docx }}
+          body: |
+            Hi,
 
-            <p><strong>Episode date:</strong> ${{ steps.latest.outputs.date_readable }}<br/>
-               <strong>Feed:</strong> <a href="https://kyledeguire.github.io/ai-news-audio-feed/feed.xml">Podcast RSS</a><br/>
-               <strong>Audio:</strong> <a href="https://kyledeguire.github.io/ai-news-audio-feed/audio/${{ steps.latest.outputs.mp3file }}">Listen to this episode</a>
-            </p>
+            Your new AI Executive Brief is ready.
 
-            <hr/>
-            <h3>Transcript</h3>
-            <pre style="white-space:pre-wrap;font-family:ui-monospace,Menlo,Consolas,monospace;">
-${{ env.TRANSCRIPT }}
-            </pre>
+            • Feed: https://kyledeguire.github.io/ai-news-audio-feed/feed.xml
+            • Audio: https://kyledeguire.github.io/ai-news-audio-feed/audio/${{ steps.latest.outputs.mp3file }}
 
-      # --- Optional: clean up working copies of .txt/.docx to avoid accidental commits later
-      - name: Cleanup working files
-        if: steps.latest.outputs.txt
-        run: |
-          rm -f "${{ steps.latest.outputs.txt }}" "${{ steps.latest.outputs.txt%.txt }}.docx" || true
+            ——— Transcript ———
+            ${{ env.TRANSCRIPT }}
