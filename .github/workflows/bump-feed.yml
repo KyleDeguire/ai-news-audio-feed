@@ -1,0 +1,40 @@
+name: Bump lastBuildDate
+
+on:
+  workflow_dispatch:  # run manually from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update lastBuildDate in feed.xml
+        run: |
+          python - << 'PY'
+          import xml.etree.ElementTree as ET
+          from email.utils import formatdate
+          import time
+          p = "feed.xml"
+          tree = ET.parse(p)
+          root = tree.getroot()
+          ch = root.find("channel")
+          if ch is None:
+              raise SystemExit("No <channel> in feed.xml")
+          lbd = ch.find("lastBuildDate")
+          if lbd is None:
+              lbd = ET.SubElement(ch, "lastBuildDate")
+          lbd.text = formatdate(timeval=None, localtime=False, usegmt=True)
+          ET.indent(tree, "  ")
+          tree.write(p, encoding="utf-8", xml_declaration=True)
+          PY
+
+      - name: Commit feed bump
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: bump lastBuildDate"
+          file_pattern: feed.xml
