@@ -2,7 +2,7 @@ name: Weekly AI Executive Brief
 
 on:
   schedule:
-    # 14:05 UTC = 08:05 MT during DST (MDT), 07:05 MST otherwise.
+    # 14:05 UTC = 08:05 MT during DST (MDT), 07:05 MST otherwise
     - cron: '5 14 * * 1'
   workflow_dispatch: {}
 
@@ -12,7 +12,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Generate audio + transcript (writes audio/*.mp3 and audio/*.txt)
+      # --- Generate audio + transcript (.mp3 and .txt in audio/)
       - name: Generate MP3 + transcript
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -35,7 +34,7 @@ jobs:
         run: |
           python scripts/generate_brief.py
 
-      # --- Update RSS feed to point at the latest audio
+      # --- Update RSS feed to latest audio
       - name: Update feed.xml
         run: |
           python scripts/update_feed.py \
@@ -56,25 +55,16 @@ jobs:
             audio/*.txt
             feed.xml
 
-      # --- Find latest transcript (guard if none exists)
+      # --- Find latest transcript & build email meta
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          FILES=(audio/*.txt)
-          if [ ${#FILES[@]} -eq 0 ]; then
-            echo "No transcript found in audio/. Exiting early."
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           LATEST_TXT=$(ls -t audio/*.txt | head -n1)
           LATEST_MP3="${LATEST_TXT%.txt}.mp3"
           STAMP="${LATEST_TXT##*_}"      # e.g., 20250915.txt
           STAMP="${STAMP%.txt}"          # 20250915
-
           READABLE_DATE=$(python - <<'PY'
 import datetime, os
 s = os.environ["STAMP"]
@@ -85,31 +75,27 @@ PY
           echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
           echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
           echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
-          echo "found=true" >> "$GITHUB_OUTPUT"
 
-      # --- Read transcript into env (only if found)
+      # --- Read transcript into env for email body
       - name: Read transcript into env
-        if: steps.latest.outputs.found == 'true'
+        shell: bash
         run: |
-          echo 'TRANSCRIPT<<EOF' >> $GITHUB_ENV
-          cat "${{ steps.latest.outputs.txt }}" >> $GITHUB_ENV
-          echo 'EOF' >> $GITHUB_ENV
+          echo 'TRANSCRIPT<<EOF' >> "$GITHUB_ENV"
+          cat "${{ steps.latest.outputs.txt }}" >> "$GITHUB_ENV"
+          echo 'EOF' >> "$GITHUB_ENV"
 
-      # --- Email the transcript (only if found)
+      # --- Email the transcript (attachment + body)
       - name: Email transcript
-        if: steps.latest.outputs.found == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT }}
+          server_port: "${{ secrets.SMTP_PORT }}"
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          # If you use port 465 (SSL): keep secure: true. If port 587 (TLS): set secure: false and add starttls: true
-          secure: true
-          # starttls: true
           subject: "AI Executive Brief transcript — ${{ steps.latest.outputs.date_readable }}"
           from: ${{ secrets.EMAIL_FROM }}
           to: ${{ secrets.EMAIL_TO }}
+          secure: true
           attachments: ${{ steps.latest.outputs.txt }}
           body: |
             New episode transcript attached.
