@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Generate audio + transcript (.mp3 and .txt in audio/)
+      # Generate audio + transcript (.mp3 and .txt in audio/)
       - name: Generate MP3 + transcript
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -34,28 +34,28 @@ jobs:
         run: |
           python scripts/generate_brief.py
 
-      # --- Update RSS feed to latest audio
+      # Update RSS feed to latest audio
       - name: Update feed.xml
         run: |
           python scripts/update_feed.py \
             --repo-url "https://kyledeguire.github.io/ai-news-audio-feed" \
             --audio-dir "audio" \
             --feed "feed.xml" \
-            --show-title "AI News Weekly – Executive Briefing" \
+            --show-title "AI News Weekly - Executive Briefing" \
             --show-description "Weekly AI news analysis and strategic insights for business leaders" \
             --language "en-us"
 
-      # --- Commit changes (audio/*.mp3, audio/*.txt, feed.xml)
+      # Commit changes (audio/*.mp3, audio/*.txt, feed.xml)
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: weekly brief – audio + transcript + feed"
+          commit_message: "chore: weekly brief - audio + transcript + feed"
           file_pattern: |
             audio/*.mp3
             audio/*.txt
             feed.xml
 
-      # --- Find latest transcript & build email meta
+      # Find latest transcript and build email meta (pure bash; no heredoc)
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
@@ -65,18 +65,14 @@ jobs:
           LATEST_MP3="${LATEST_TXT%.txt}.mp3"
           STAMP="${LATEST_TXT##*_}"      # e.g., 20250915.txt
           STAMP="${STAMP%.txt}"          # 20250915
-          READABLE_DATE=$(python - <<'PY'
-import datetime, os
-s = os.environ["STAMP"]
-d = datetime.datetime.strptime(s, "%Y%m%d")
-print(d.strftime("%A, %B %d, %Y"))
-PY
-)
-          echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
-          echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
-          echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
+          READABLE_DATE=$(date -d "${STAMP:0:4}-${STAMP:4:2}-${STAMP:6:2}" +"%A, %B %d, %Y")
+          {
+            echo "txt=${LATEST_TXT}"
+            echo "mp3file=$(basename "$LATEST_MP3")"
+            echo "date_readable=${READABLE_DATE}"
+          } >> "$GITHUB_OUTPUT"
 
-      # --- Read transcript into env for email body
+      # Read transcript into env for email body
       - name: Read transcript into env
         shell: bash
         run: |
@@ -84,7 +80,7 @@ PY
           cat "${{ steps.latest.outputs.txt }}" >> "$GITHUB_ENV"
           echo 'EOF' >> "$GITHUB_ENV"
 
-      # --- Email the transcript (attachment + body)
+      # Email the transcript (attachment + body)
       - name: Email transcript
         uses: dawidd6/action-send-mail@v3
         with:
@@ -96,7 +92,7 @@ PY
           from: ${{ secrets.EMAIL_FROM }}
           to: ${{ secrets.EMAIL_TO }}
           secure: true
-          attachments: ${{ steps.latest.outputs.txt }}
+          attachments: "${{ steps.latest.outputs.txt }}"
           body: |
             New episode transcript attached.
 
