@@ -1,23 +1,29 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
-<channel>
-    <title>AI News Weekly - Executive Briefing</title>
-    <description>Weekly AI news analysis and strategic insights for business leaders</description>
-    <link>https://yourusername.github.io/ai-news-feed/</link>
-    <language>en-us</language>
-    <lastBuildDate>Sun, 14 Sep 2025 13:21:31 GMT</lastBuildDate>
-    
+<?xml version='1.0' encoding='utf-8'?>
+<rss version="2.0">
+  <channel>
     <item>
-        <title>AI Executive Brief - September 14, 2025</title>
-        <description>Executive Briefing: AI Market Trends and Strategic Insights
+      <title>AI Executive Brief - 14 Sep, 2025</title>
+      <description>Executive Briefing: AI Market Trends and Strategic Insights</description>
+      <enclosure url="https://kyledeguire.github.io/ai-news-audio-feed/audio/ai_news_20250914.mp3" length="3718627" type="audio/mpeg" />
+      <pubDate>Sun, 14 Sep 2025 12:00:00 GMT</pubDate>
+      <guid>ai_news_20250914</guid>
+    </item>
+    <title>AI News Weekly – Executive Briefing</title>
+    <description>Weekly AI news analysis and strategic insights for business leaders</description>
+    <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
+    <language>en-us</language>
+    <lastBuildDate>Mon, 15 Sep 2025 03:55:31 GMT</lastBuildDate>
+    <item>
+      <title>AI Executive Brief - September 14, 2025</title>
+      <description>Executive Briefing: AI Market Trends and Strategic Insights
 
 Good morning/afternoon,
 
 **Key Developments**
 This week in AI saw exciting breakthroughs and announcements. One of the most significant is the development of new AI applications that are revolutionizing the way we work. For instance, Matt Wolfe demonstrated how to create free apps using AI technologies. Meanwhile, AI Advantage highlighted Claude, an AI tool that has become increasingly useful in the workplace due to its recent upgrades...</description>
-        <enclosure url="https://yourusername.github.io/ai-news-feed/audio/ai_news_20250914.mp3" length="3718627" type="audio/mpeg"/>
-        <pubDate>Sun, 14 Sep 2025 13:21:31 GMT</pubDate>
-        <guid>ai-brief-2025-09-14</guid>
+      <enclosure url="https://yourusername.github.io/ai-news-feed/audio/ai_news_20250914.mp3" length="3718627" type="audio/mpeg" />
+      <pubDate>Sun, 14 Sep 2025 13:21:31 GMT</pubDate>
+      <guid>ai-brief-2025-09-14</guid>
     </item>
-</channel>
+  </channel>
 </rss>
