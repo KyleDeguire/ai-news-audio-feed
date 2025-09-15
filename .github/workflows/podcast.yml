@@ -6,6 +6,9 @@ on:
       - "audio/*.mp3"
   workflow_dispatch:
 
+permissions:
+  contents: write   # allow workflow to commit feed.xml changes
+
 jobs:
   build:
     runs-on: ubuntu-latest
