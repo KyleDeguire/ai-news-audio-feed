@@ -79,16 +79,25 @@ jobs:
           fi
 
       # --- Read transcript text into $GITHUB_ENV safely (only if found)
-      - name: Read transcript into env
+            - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          DELIM="$(python -c 'import secrets; print(secrets.token_hex(16))')"
+          # Create a delimiter with no whitespace or newline characters
+          DELIM=$(python - <<'PY'
+import uuid, sys
+sys.stdout.write(str(uuid.uuid4()).replace('-', ''))
+PY
+)
+
           {
-            echo "TRANSCRIPT<<${DELIM}"
+            # Open a multi-line env assignment using our safe delimiter
+            printf 'TRANSCRIPT<<%s\n' "$DELIM"
+            # Write the transcript contents
             cat "${{ steps.latest.outputs.txt }}"
-            echo "${DELIM}"
+            # Close the multi-line env assignment with the exact same delimiter
+            printf '%s\n' "$DELIM"
           } >> "$GITHUB_ENV"
 
       # --- Email the transcript (attachment + body) if it exists
