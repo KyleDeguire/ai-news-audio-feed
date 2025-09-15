@@ -57,16 +57,15 @@ def intro_date_str():
 
 # ===== OpenAI wrappers =====
 def openai_chat(api_key, model, messages):
-    import openai
-    openai.api_key = api_key
-    resp = openai.chat.completions.create(
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    resp = client.chat.completions.create(
         model=model,
         messages=messages,
         temperature=0.6,
         max_tokens=2000,
     )
     return resp.choices[0].message.content
-
 def openai_tts_elevenlabs(api_key, voice_id, text, path_out):
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {
