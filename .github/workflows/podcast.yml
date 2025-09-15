@@ -1,0 +1,35 @@
+name: Update podcast feed
+
+on:
+  push:
+    paths:
+      - "audio/*.mp3"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run feed updater
+        run: |
+          python3 scripts/update_feed.py \
+            --repo-url "https://kyledeguire.github.io/ai-news-audio-feed" \
+            --audio-dir "audio" \
+            --feed "feed.xml" \
+            --show-title "AI News Weekly – Executive Briefing" \
+            --show-description "Weekly AI news analysis and strategic insights for business leaders" \
+            --language "en-us"
+
+      - name: Commit changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: auto-update feed.xml for latest audio"
+          file_pattern: feed.xml
