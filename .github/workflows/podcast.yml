@@ -12,6 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,7 +32,8 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          ELEVENLABS_VOICE_ID: M7ya1YbaeFaPXljg9BpK
+          # If you stored the voice id as a secret, uncomment next line:
+          # ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: |
           python scripts/generate_brief.py
 
@@ -42,7 +44,7 @@ jobs:
             --repo-url "https://kyledeguire.github.io/ai-news-audio-feed" \
             --audio-dir "audio" \
             --feed "feed.xml" \
-            --show-title "AI News Weekly - Executive Briefing" \
+            --show-title "AI News Weekly – Executive Briefing" \
             --show-description "Weekly AI news analysis and strategic insights for business leaders" \
             --language "en-us"
 
@@ -50,50 +52,76 @@ jobs:
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: weekly brief - audio + transcript + feed"
+          commit_message: "chore: weekly brief – audio + transcript + feed"
           file_pattern: |
             audio/*.mp3
             audio/*.txt
             feed.xml
 
-      # Find latest transcript and build email meta (pure bash; no heredoc)
+      # Find latest transcript (guard if none exists)
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          FILES=(audio/*.txt)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No transcript found in audio/. Exiting early."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           LATEST_TXT=$(ls -t audio/*.txt | head -n1)
           LATEST_MP3="${LATEST_TXT%.txt}.mp3"
           STAMP="${LATEST_TXT##*_}"      # e.g., 20250915.txt
           STAMP="${STAMP%.txt}"          # 20250915
+
+          # Build a readable date in bash (Ubuntu runner supports GNU date)
           READABLE_DATE=$(date -d "${STAMP:0:4}-${STAMP:4:2}-${STAMP:6:2}" +"%A, %B %d, %Y")
+
           {
             echo "txt=${LATEST_TXT}"
             echo "mp3file=$(basename "$LATEST_MP3")"
             echo "date_readable=${READABLE_DATE}"
+            echo "found=true"
           } >> "$GITHUB_OUTPUT"
 
-      # Read transcript into env for email body
+      # Read transcript into env (safe delimiter; only if found)
       - name: Read transcript into env
+        if: steps.latest.outputs.found == 'true'
         shell: bash
         run: |
-          echo 'TRANSCRIPT<<EOF' >> "$GITHUB_ENV"
-          cat "${{ steps.latest.outputs.txt }}" >> "$GITHUB_ENV"
-          echo 'EOF' >> "$GITHUB_ENV"
+          set -euo pipefail
+          # Generate a unique delimiter to avoid "Matching delimiter not found"
+          DELIM=$(python - <<'PY'
+import secrets
+print(secrets.token_hex(16))
+PY
+)
+          {
+            echo "TRANSCRIPT<<${DELIM}"
+            cat "${{ steps.latest.outputs.txt }}"
+            echo "${DELIM}"
+          } >> "$GITHUB_ENV"
 
-      # Email the transcript (attachment + body)
+      # Email the transcript (attachment + body; only if found)
       - name: Email transcript
+        if: steps.latest.outputs.found == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: "${{ secrets.SMTP_PORT }}"
+          server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
+          # If you use port 465 (SSL): keep secure: true
+          # If you use port 587 (TLS): set secure: false and add starttls: true
+          secure: true
+          # starttls: true
           subject: "AI Executive Brief transcript — ${{ steps.latest.outputs.date_readable }}"
           from: ${{ secrets.EMAIL_FROM }}
           to: ${{ secrets.EMAIL_TO }}
-          secure: true
-          attachments: "${{ steps.latest.outputs.txt }}"
+          attachments: ${{ steps.latest.outputs.txt }}
           body: |
             New episode transcript attached.
 
