@@ -49,7 +49,7 @@ jobs:
             --show-description "Weekly AI news analysis and strategic insights for business leaders" \
             --language "en-us"
 
-      # 5) Commit only MP3 + feed (intentionally NOT committing .txt or .docx)
+      # 5) Commit only MP3 + feed (INTENTIONALLY not committing .txt/.docx)
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
@@ -87,14 +87,14 @@ jobs:
           echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
           echo "found=true" >> "$GITHUB_OUTPUT"
 
-      # 7) Read transcript into env (collision-proof delimiter)  << ONLY CHANGE YOU ASKED FOR >>
+      # 7) Read transcript into env (collision-proof delimiter)  << ONLY CHANGE >>
       - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          # Unique delimiter per run; cannot appear in content
-          DELIM="__TRANSCRIPT_$(date +%s%N)_$$__"
+          # unique delimiter per run; cannot appear in content
+          DELIM="__TRANSCRIPT_$$__$(date +%s%N)__"
           {
             printf 'TRANSCRIPT<<%s\n' "$DELIM"
             cat "${{ steps.latest.outputs.txt }}"
@@ -121,14 +121,12 @@ jobs:
           to: ${{ secrets.EMAIL_TO }}
           subject: "AI Executive Brief — ${{ steps.latest.outputs.date_readable }}"
           attachments: ${{ steps.latest.outputs.docx }}
-          html_body: |
-            <p>New episode is ready.</p>
-            <p><strong>Episode date:</strong> ${{ steps.latest.outputs.date_readable }}<br/>
-               <strong>Feed:</strong> <a href="https://kyledeguire.github.io/ai-news-audio-feed/feed.xml">Podcast RSS</a><br/>
-               <strong>Audio:</strong> <a href="https://kyledeguire.github.io/ai-news-audio-feed/audio/${{ steps.latest.outputs.mp3file }}">Listen</a>
-            </p>
-            <hr/>
-            <h3>Transcript</h3>
-            <pre style="white-space:pre-wrap;font-family:ui-monospace,Menlo,Consolas,monospace;">
-${{ env.TRANSCRIPT }}
-            </pre>
+          body: |
+            New episode transcript below (and attached as .docx).
+
+            Episode date: ${{ steps.latest.outputs.date_readable }}
+            Feed: https://kyledeguire.github.io/ai-news-audio-feed/feed.xml
+            Audio: https://kyledeguire.github.io/ai-news-audio-feed/audio/${{ steps.latest.outputs.mp3file }}
+
+            ---- Transcript ----
+            ${{ env.TRANSCRIPT }}
