@@ -14,10 +14,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # --- Repo + Python setup ------------------------------------------------
+      # 1) Checkout repository
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2) Python setup
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -28,16 +29,16 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Generate audio + transcript (.mp3 and .txt go into audio/) --------
+      # 3) Generate audio (.mp3) + transcript (.txt) in audio/
       - name: Generate MP3 + transcript
         env:
           OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY:   ${{ secrets.ELEVENLABS_API_KEY }}
-          ELEVENLABS_VOICE_ID:  ${{ secrets.ELEVENLABS_VOICE_ID }}   # keep if you use a fixed voice id
+          ELEVENLABS_VOICE_ID:  ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: |
           python scripts/generate_brief.py
 
-      # --- Update RSS feed to point at the latest audio -----------------------
+      # 4) Update RSS feed to point at the latest audio
       - name: Update feed.xml
         run: |
           python scripts/update_feed.py \
@@ -48,8 +49,7 @@ jobs:
             --show-description "Weekly AI news analysis and strategic insights for business leaders" \
             --language "en-us"
 
-      # --- Commit changes (publish mp3 + feed to Pages) -----------------------
-      # NOTE: we intentionally do NOT commit .txt (transcript) or .docx
+      # 5) Commit only MP3 + feed (do NOT commit .txt/.docx)
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
@@ -58,36 +58,35 @@ jobs:
             audio/*.mp3
             feed.xml
 
-      # --- Find latest transcript and build email meta ------------------------
+      # 6) Find latest transcript + build meta (NO here-docs)
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
         run: |
           set -euo pipefail
-          LATEST_TXT=$(ls -t audio/*.txt | head -n1)
+          if ! ls -1 audio/*.txt >/dev/null 2>&1; then
+            echo "No transcript found" >&2
+            exit 1
+          fi
+          LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
           LATEST_MP3="${LATEST_TXT%.txt}.mp3"
           LATEST_DOCX="${LATEST_TXT%.txt}.docx"
           STAMP="${LATEST_TXT##*_}"; STAMP="${STAMP%.txt}"
 
-          READABLE_DATE=$(python - <<'PY'
-import os, datetime
-s=os.environ["STAMP"]
-d=datetime.datetime.strptime(s,"%Y%m%d")
-print(d.strftime("%A, %B %d, %Y"))
-PY
-)
-          echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
-          echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
-          echo "docx=$LATEST_DOCX" >> "$GITHUB_OUTPUT"
-          echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
+          READABLE_DATE=$(python -c "import datetime;print(datetime.datetime.strptime('${STAMP}','%Y%m%d').strftime('%A, %B %d, %Y'))")
 
-      # --- Build a .docx from the transcript (for nicer viewing) -------------
+          echo "txt=${LATEST_TXT}" >> "$GITHUB_OUTPUT"
+          echo "mp3file=$(basename "${LATEST_MP3}")" >> "$GITHUB_OUTPUT"
+          echo "docx=${LATEST_DOCX}" >> "$GITHUB_OUTPUT"
+          echo "date_readable=${READABLE_DATE}" >> "$GITHUB_OUTPUT"
+
+      # 7) Build .docx transcript (not committed)
       - name: Build .docx transcript
         if: steps.latest.outputs.txt != ''
         run: |
           python scripts/make_docx.py "${{ steps.latest.outputs.txt }}" "${{ steps.latest.outputs.docx }}"
 
-      # --- Email transcript: full body (clickable links) + .docx attachment ---
+      # 8) Email transcript (FULL body + .docx) via Python (avoids env/output size limits)
       - name: Email transcript (.docx attached, full body)
         if: steps.latest.outputs.txt != ''
         env:
