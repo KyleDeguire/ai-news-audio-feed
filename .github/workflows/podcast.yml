@@ -5,6 +5,11 @@ on:
     # 14:05 UTC = 08:05 MT during DST (MDT), 07:05 MST otherwise
     - cron: '5 14 * * 1'
   workflow_dispatch: {}
+  push:
+    branches: [ main ]
+    paths:
+      - ".github/force-run/**"           # manual, safe, opt-in trigger
+      - ".github/workflows/podcast.yml"  # re-run if you change this file
 
 permissions:
   contents: write
