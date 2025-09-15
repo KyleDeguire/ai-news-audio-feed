@@ -1,41 +1,42 @@
 #!/usr/bin/env python3
 import os, sys, json, datetime, re, requests, feedparser
 from pathlib import Path
+from openai import OpenAI
 
 # ===== Settings you can tweak =====
-AUDIO_DIR = "audio"
+AUDIO_DIR   = "audio"
 
-# Text generation (OpenAI)
-MODEL_TEXT = "gpt-4o-mini"          # for writing the scripts
+# OpenAI models
+MODEL_TEXT  = "gpt-4o-mini"   # writing the brief (JSON output)
+TARGET_MIN  = 4.5             # 4–5 minutes ~= ~750–900 words
 
-# ElevenLabs TTS (audio uses the clean/no-citations version)
-VOICE_NAME = "Hannah"               # friendly name (used only if no env id set)
-MODEL_TTS = "eleven_multilingual_v2"
-SPEED = 1.0
-STABILITY = 0.3
-SIMILARITY = 0.8
-STYLE = 0.2
+# ElevenLabs TTS (Option A)
+VOICE_NAME  = "Hannah"        # friendly label (only used if no env voice id)
+MODEL_TTS   = "eleven_multilingual_v2"
+SPEED       = 1.0
+STABILITY   = 0.3             # 0..1 lower = more expressive
+SIMILARITY  = 0.8             # 0..1 higher = stays “on voice”
+STYLE       = 0.1             # 0..1 adds emphasis/expressiveness
 SPEAKER_BOOST = True
 
-TARGET_MIN = 4.5                    # 4–5 minutes ≈ 700–900 words
-
-# Optional mapping if you want hard-code IDs later
+# Optional mapping if you want to hard-code IDs (fill these if you prefer)
 VOICE_ID_MAP = {
-    "Hannah": "",   # put real id here if you prefer hard-coding
+    # "Hannah": "xxxxxxxxxxxxxxxxxxxxxxxx",   # <- put your Hannah voice_id here if you want
 }
 
-# Light headline sources (contextual, optional)
+# Light headline sources to give the model weekly context (optional)
 SOURCES = [
     "https://www.theverge.com/rss/index.xml",
     "https://feeds.feedburner.com/TechCrunch/artificial-intelligence",
     "https://www.marktechpost.com/feed/",
 ]
 
-# ---------- Helpers ----------
+# ===== Helpers =====
 def denver_date_today():
-    # Keep display stable vs cron TZ
-    denver = datetime.timezone(datetime.timedelta(hours=-6))
-    return datetime.datetime.now(datetime.timezone.utc).astimezone(denver).date()
+    """Use a fixed MST/MDT base; keeps date display consistent for your audience."""
+    # “America/Denver” would need zoneinfo on the runner; this keeps it simple:
+    denver = datetime.timedelta(hours=-6)  # good enough for gating/date labels
+    return (datetime.datetime.now(datetime.timezone.utc) + denver).date()
 
 def monday_stamp():
     d = denver_date_today()
@@ -44,143 +45,195 @@ def monday_stamp():
 
 def intro_date_str():
     d = denver_date_today()
+    # e.g., "Monday, September 15, 2025"
     return f"{d.strftime('%A')}, {d.strftime('%B')} {d.day}, {d.strftime('%Y')}"
 
-def fetch_headlines():
+def fetch_headlines(limit_total=12):
+    """Very light ‘ambient context’ for the model. Totally optional."""
     items = []
     for url in SOURCES:
         try:
             feed = feedparser.parse(url)
-            for e in feed.entries[:10]:
+            for e in feed.entries[:6]:
                 title = (getattr(e, "title", "") or "").strip()
-                link = (getattr(e, "link", "") or "").strip()
-                if title and link:
-                    items.append(f"- {title}  ({link})")
+                link  = (getattr(e, "link", "") or "").strip()
+                if title:
+                    items.append(f"- {title} ({link})")
         except Exception:
             pass
-    return "\n".join(items[:30])
+        if len(items) >= limit_total:
+            break
+    return "\n".join(items[:limit_total])
 
-# ---------- OpenAI ----------
-def openai_chat(api_key, model, messages):
-    import openai
-    openai.api_key = api_key
-    # Classic Chat Completions
-    resp = openai.ChatCompletion.create(
-        model=model,
-        messages=messages,
-        temperature=0.4,
-        max_tokens=1400,
+def fail(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+# ===== OpenAI (new client) =====
+def openai_structured_brief(api_key: str, user_prompt: str) -> dict:
+    """
+    Ask the model to return JSON:
+      { "spoken": "<no-citation voice script>",
+        "footnotes": [ { "id": 1, "title": "...", "url": "https://..." }, ... ] }
+    """
+    client = OpenAI(api_key=api_key)
+
+    system_msg = (
+        "You are a senior strategic AI analyst preparing a weekly 4–5 minute executive audio brief. "
+        "Audience: business executives, strategy consultants, AI adoption leads, and solutions consultants. "
+        "Tone: professional but conversational for audio. Focus on actionable intelligence, not hype. "
+        "DO NOT read citations aloud. Produce clean plain text for voice (no brackets, no URLs, no inline citations). "
+        "Return JSON with two fields:\n"
+        "  - spoken: the full spoken script only (no citations or URLs)\n"
+        "  - footnotes: an array of {id, title, url} with exact source links used to inform your analysis\n"
+        "Spoken script must begin with the line: "
+        f"“AI Updates for {intro_date_str()}” and then immediately cover the five categories in order."
     )
-    return resp.choices[0].message["content"]
 
-# ---------- ElevenLabs ----------
-def eleven_tts(api_key, model, voice, text, out_path):
-    # Prefer env id, else map, else friendly name
-    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
-    if not voice_id:
-        voice_id = VOICE_ID_MAP.get(voice, "") or voice
+    # Your exact category framing (kept verbatim)
+    categories = (
+        "1) NEW PRODUCTS & CAPABILITIES — launches, key features, availability timeline, practical business use-cases\n"
+        "2) STRATEGIC BUSINESS IMPACT — implications for enterprise strategy and competitive positioning\n"
+        "3) IMPLEMENTATION OPPORTUNITIES — concrete ways companies use AI for efficiency/profitability\n"
+        "4) MARKET DYNAMICS — funding, partnerships, regulatory moves, risks & privacy concerns\n"
+        "5) TALENT MARKET SHIFTS — hiring trends, skill gaps, where demand is moving\n"
+    )
 
+    # Optional context
+    headlines = fetch_headlines()
+
+    user_msg = f"""
+Write a concise ~{int(TARGET_MIN*160)}-word audio brief (~{TARGET_MIN:0.1f}–{TARGET_MIN+0.7:0.1f} minutes).
+
+Follow exactly this outline (use on-air friendly transitions and short sentences):
+{categories}
+
+Constraints:
+- Keep it specific and useful for operators (avoid hype).
+- You may name tools, companies, or people for specificity.
+- DO NOT include any URLs or bracketed citations in the spoken script.
+- Put sources ONLY in the footnotes array as JSON with exact links.
+
+Optional recent headlines to consider (use only if genuinely useful):
+{headlines}
+
+User prompt / policy notes for this week:
+{user_prompt}
+""".strip()
+
+    resp = client.chat.completions.create(
+        model=MODEL_TEXT,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ],
+        temperature=0.4,
+        max_tokens=1600,
+    )
+
+    content = resp.choices[0].message.content.strip()
+    try:
+        data = json.loads(content)
+        if not isinstance(data, dict) or "spoken" not in data or "footnotes" not in data:
+            raise ValueError("JSON missing required keys.")
+        return data
+    except Exception as e:
+        # Fallback: treat whole thing as spoken if JSON parsing fails
+        return {"spoken": content, "footnotes": []}
+
+# ===== ElevenLabs TTS =====
+def elevenlabs_tts(api_key: str, voice_id: str, text: str, out_mp3: Path):
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    headers = {
-        "xi-api-key": api_key,
-        "accept": "audio/mpeg",
-        "Content-Type": "application/json",
-    }
     payload = {
+        "model_id": MODEL_TTS,
         "text": text,
-        "model_id": model,
         "voice_settings": {
             "stability": STABILITY,
             "similarity_boost": SIMILARITY,
             "style": STYLE,
             "use_speaker_boost": SPEAKER_BOOST,
-        },
-        "voice": voice,
+        }
     }
-    r = requests.post(url, headers=headers, data=json.dumps(payload))
-    r.raise_for_status()
-    Path(out_path).write_bytes(r.content)
+    headers = {
+        "xi-api-key": api_key,
+        "accept": "audio/mpeg",
+        "content-type": "application/json",
+    }
+    r = requests.post(url, headers=headers, json=payload, timeout=120)
+    if r.status_code != 200:
+        fail(f"ElevenLabs TTS error {r.status_code}: {r.text[:500]}")
+    out_mp3.write_bytes(r.content)
 
-# ---------- Main ----------
+# ===== Main =====
 def main():
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    # --- Secrets
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
-        print("Missing OPENAI_API_KEY", file=sys.stderr); sys.exit(1)
+        fail("Missing OPENAI_API_KEY in env.")
+    el_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+    if not el_key:
+        fail("Missing ELEVENLABS_API_KEY in env.")
 
-    tts_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
-    if not tts_key:
-        print("Missing ELEVENLABS_API_KEY", file=sys.stderr); sys.exit(1)
+    # Resolve voice id
+    voice_id = os.environ.get("ELEVENLABS_VOICE_ID", "").strip()
+    if not voice_id:
+        voice_id = VOICE_ID_MAP.get(VOICE_NAME, "").strip()
+    if not voice_id:
+        fail("No ELEVENLABS_VOICE_ID in env and VOICE_ID_MAP entry is empty. "
+             "Add ELEVENLABS_VOICE_ID secret (preferred) or fill VOICE_ID_MAP[Hannah].")
 
-    # Verbatim category framing you requested
-    categories_block = (
-        "1) NEW PRODUCTS & CAPABILITIES — launches, key features, availability timeline, practical business use-cases\n"
-        "2) STRATEGIC BUSINESS IMPACT — implications for enterprise strategy and competitive positioning\n"
-        "3) IMPLEMENTATION OPPORTUNITIES — concrete ways companies use AI for efficiency/profitability\n"
-        "4) MARKET DYNAMICS — funding, partnerships, regulatory moves, risks & privacy concerns\n"
-        "5) TALENT MARKET SHIFTS — hiring trends, skill gaps, where demand is moving"
+    # --- Build the user policy/spec (kept verbatim & extendable)
+    brief_spec = (
+        "Create a weekly AI executive briefing for operators. "
+        "Keep the signal high, concise and immediately useful for decisions. "
+        "Avoid filler, avoid speculation, and avoid reading any source attributions on air."
     )
 
-    date_str = intro_date_str()
-    brief_spec = f"""AI Updates for {date_str}.
+    # --- Get structured result from OpenAI (spoken + footnotes)
+    data = openai_structured_brief(api_key, brief_spec)
+    spoken = data.get("spoken", "").strip()
+    footnotes = data.get("footnotes", [])
 
-You are a strategic AI analyst preparing a weekly briefing for business executives, strategy consultants, AI adoption strategists, and solutions consultants.
-Create a 4–5 minute spoken summary of the week's AI developments that moves through these sections in order:
+    if not spoken:
+        fail("OpenAI returned an empty spoken script.")
 
-{categories_block}
+    # --- Assemble transcript with footnotes (links)
+    foot_block = ""
+    if footnotes:
+        lines = ["", "---", "Sources:"]
+        for item in footnotes:
+            try:
+                iid = item.get("id")
+                ttl = (item.get("title") or "").strip()
+                url = (item.get("url") or "").strip()
+                # Extremely shortener is avoided here; keep direct links for reliability.
+                if not url:
+                    continue
+                label = f"[{iid}]" if iid else "- "
+                if ttl:
+                    lines.append(f"{label} {ttl} — {url}")
+                else:
+                    lines.append(f"{label} {url}")
+            except Exception:
+                pass
+        foot_block = "\n".join(lines)
 
-Keep it professional but conversational for audio. Focus on actionable intelligence, not hype. Begin right after the line “AI Updates for …” and progress through the five sections with clear signposts.
-"""
+    transcript_text = spoken + ("\n" + foot_block if foot_block else "")
 
-    headlines = fetch_headlines()
-
-    # --- AUDIO VERSION (no citations anywhere) ---
-    system_audio = {
-        "role": "system",
-        "content": (
-            "You are a senior analyst. Write concise, factual, audio-friendly copy with strong signal and clear structure. "
-            "Absolutely do NOT include citations, URLs, square brackets, footnotes, or markers. "
-            "Avoid saying source names aloud unless they materially help clarity. "
-            "Target ~750–900 words for 4–5 minutes."
-        ),
-    }
-    user_audio = {
-        "role": "user",
-        "content": f"""{brief_spec}
-
-Optional context to consider (only if genuinely useful; otherwise ignore):
-{headlines}
-""",
-    }
-
-    # --- TRANSCRIPT VERSION (with end-of-text footnotes) ---
-    system_transcript = {
-        "role": "system",
-        "content": (
-            "You are a senior analyst. Produce the same briefing text, but include footnote-style citations. "
-            "In the body, place compact numeric markers like [^1], [^2] after the relevant sentence (no URLs in body). "
-            "At the very end, add a section titled 'References' with one bullet per footnote in order. "
-            "Each bullet should be: [^n] Title — Publisher or Org — short URL (use the public/permalink version; shorten if the site provides a short form). "
-            "Only cite material necessary to support key claims; avoid over-citation."
-        ),
-    }
-    user_transcript = user_audio  # same spec/context
-
-    audio_script = openai_chat(api_key, MODEL_TEXT, [system_audio, user_audio]).strip()
-    transcript_script = openai_chat(api_key, MODEL_TEXT, [system_transcript, user_transcript]).strip()
-
-    # Paths
+    # --- Save audio + transcript
     Path(AUDIO_DIR).mkdir(exist_ok=True)
-    fname = f"ai_news_{monday_stamp()}.mp3"
-    mp3_path = Path(AUDIO_DIR) / fname
-    txt_path = Path(AUDIO_DIR) / f"{Path(fname).stem}.txt"
+    fname_base = f"ai_news_{monday_stamp()}"
+    mp3_path = Path(AUDIO_DIR) / f"{fname_base}.mp3"
+    txt_path = Path(AUDIO_DIR) / f"{fname_base}.txt"
 
-    # Generate
-    eleven_tts(tts_key, MODEL_TTS, VOICE_NAME, audio_script, mp3_path)
-    txt_path.write_text(transcript_script, encoding="utf-8")
+    # TTS from the SPOKEN version (no citations)
+    elevenlabs_tts(el_key, voice_id, spoken, mp3_path)
+
+    # Transcript (with footnotes block)
+    txt_path.write_text(transcript_text, encoding="utf-8")
 
     print(f"Wrote {mp3_path} and {txt_path}")
-    print("\n--- AUDIO SCRIPT (first 400 chars) ---\n")
-    print(audio_script[:400])
 
 if __name__ == "__main__":
     main()
