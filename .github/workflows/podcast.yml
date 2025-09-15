@@ -4,12 +4,7 @@ on:
   schedule:
     # 14:05 UTC = 08:05 MT during DST (MDT), 07:05 MST otherwise
     - cron: '5 14 * * 1'
-  workflow_dispatch: {}
-  push:
-    branches: [ main ]
-    paths:
-      - ".github/force-run/**"           # manual, safe, opt-in trigger
-      - ".github/workflows/podcast.yml"  # re-run if you change this file
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,6 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,16 +27,17 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Generate audio + transcript
+      # --- Generate audio + transcript (.mp3 and .txt in audio/)
       - name: Generate MP3 + transcript
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          # Optional: if you saved your chosen 11labs voice id as a secret
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: |
           python scripts/generate_brief.py
 
-      # --- Update RSS feed to point at the latest audio
+      # --- Update RSS feed to the latest audio
       - name: Update feed.xml
         run: |
           python scripts/update_feed.py \
@@ -61,43 +58,48 @@ jobs:
             audio/*.txt
             feed.xml
 
-      # --- Find latest transcript metadata for email
+      # --- Find latest transcript & build email meta (safe heredoc)
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
         run: |
           set -euo pipefail
-          LATEST_TXT=$(ls -t audio/*.txt | head -n1)
-          LATEST_MP3="${LATEST_TXT%.txt}.mp3"
-          STAMP="${LATEST_TXT##*_}"      # e.g., 20250915.txt
-          STAMP="${STAMP%.txt}"          # 20250915
-          READABLE_DATE=$(python - <<'PY'
-import datetime, os
+          if ls -t audio/*.txt >/dev/null 2>&1; then
+            LATEST_TXT=$(ls -t audio/*.txt | head -n1)
+            LATEST_MP3="${LATEST_TXT%.txt}.mp3"
+            STAMP="${LATEST_TXT##*_}"      # e.g., 20250915.txt -> 20250915
+            STAMP="${STAMP%.txt}"
+
+            READABLE_DATE=$(python - <<'PY'
+import os, datetime
 s = os.environ["STAMP"]
 d = datetime.datetime.strptime(s, "%Y%m%d")
 print(d.strftime("%A, %B %d, %Y"))
 PY
 )
-          echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
-          echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
-          echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
-          echo "found=true" >> "$GITHUB_OUTPUT"
 
-      # --- Read transcript into env (safe delimiter)
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
+            echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
+            echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # --- Read transcript into $GITHUB_ENV using a unique delimiter
       - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
         run: |
           set -euo pipefail
           DELIM=$(python - <<'PY'
-import uuid, sys
-sys.stdout.write(str(uuid.uuid4()).replace('-', ''))
+import uuid; print(uuid.uuid4().hex)
 PY
 )
           {
-            printf 'TRANSCRIPT<<%s\n' "$DELIM"
+            echo "TRANSCRIPT<<$DELIM"
             cat "${{ steps.latest.outputs.txt }}"
-            printf '%s\n' "$DELIM"
+            echo "$DELIM"
           } >> "$GITHUB_ENV"
 
       # --- Email the transcript (attachment + body)
@@ -109,10 +111,10 @@ PY
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "AI Executive Brief transcript — ${{ steps.latest.outputs.date_readable }}"
+          secure: true
           from: ${{ secrets.EMAIL_FROM }}
           to: ${{ secrets.EMAIL_TO }}
-          secure: true
+          subject: "AI Executive Brief transcript — ${{ steps.latest.outputs.date_readable }}"
           attachments: ${{ steps.latest.outputs.txt }}
           body: |
             New episode transcript attached.
