@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Generate audio + transcript (.mp3 and .txt in audio/)
+      # --- Generate audio + transcript
       - name: Generate MP3 + transcript
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -56,51 +56,46 @@ jobs:
             audio/*.txt
             feed.xml
 
-      # --- Find latest transcript & build email meta (guard if none yet)
+      # --- Find latest transcript metadata for email
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
         run: |
           set -euo pipefail
-          if ls -t audio/*.txt >/dev/null 2>&1; then
-            LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
-            LATEST_MP3="${LATEST_TXT%.txt}.mp3"
-            STAMP="${LATEST_TXT##*_}"      # e.g., 20250915.txt
-            STAMP="${STAMP%.txt}"          # -> 20250915
-            READABLE_DATE="$(date -d "${STAMP:0:4}-${STAMP:4:2}-${STAMP:6:2}" '+%A, %B %d, %Y')"
-            {
-              echo "txt=${LATEST_TXT}"
-              echo "mp3file=$(basename "${LATEST_MP3}")"
-              echo "date_readable=${READABLE_DATE}"
-              echo "found=true"
-            } >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
+          LATEST_TXT=$(ls -t audio/*.txt | head -n1)
+          LATEST_MP3="${LATEST_TXT%.txt}.mp3"
+          STAMP="${LATEST_TXT##*_}"      # e.g., 20250915.txt
+          STAMP="${STAMP%.txt}"          # 20250915
+          READABLE_DATE=$(python - <<'PY'
+import datetime, os
+s = os.environ["STAMP"]
+d = datetime.datetime.strptime(s, "%Y%m%d")
+print(d.strftime("%A, %B %d, %Y"))
+PY
+)
+          echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
+          echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
+          echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
 
-      # --- Read transcript text into $GITHUB_ENV safely (only if found)
-            - name: Read transcript into env
+      # --- Read transcript into env (safe delimiter)
+      - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          # Create a delimiter with no whitespace or newline characters
           DELIM=$(python - <<'PY'
 import uuid, sys
 sys.stdout.write(str(uuid.uuid4()).replace('-', ''))
 PY
 )
-
           {
-            # Open a multi-line env assignment using our safe delimiter
             printf 'TRANSCRIPT<<%s\n' "$DELIM"
-            # Write the transcript contents
             cat "${{ steps.latest.outputs.txt }}"
-            # Close the multi-line env assignment with the exact same delimiter
             printf '%s\n' "$DELIM"
           } >> "$GITHUB_ENV"
 
-      # --- Email the transcript (attachment + body) if it exists
+      # --- Email the transcript (attachment + body)
       - name: Email transcript
         if: steps.latest.outputs.found == 'true'
         uses: dawidd6/action-send-mail@v3
@@ -109,14 +104,11 @@ PY
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "AI Executive Brief transcript — ${{ steps.latest.outputs.date_readable }}"
           from: ${{ secrets.EMAIL_FROM }}
           to: ${{ secrets.EMAIL_TO }}
-          subject: "AI Executive Brief transcript — ${{ steps.latest.outputs.date_readable }}"
+          secure: true
           attachments: ${{ steps.latest.outputs.txt }}
-          # If you use port 465 (SSL): set secure: true, starttls: false
-          # If you use port 587 (TLS): set secure: false, starttls: true
-          secure: false
-          starttls: true
           body: |
             New episode transcript attached.
 
