@@ -12,12 +12,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       # 1) Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2) Python
+      # 2) Python setup
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -28,12 +29,11 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # 3) Generate audio + transcript (.mp3 to audio/, .txt to audio/)
+      # 3) Generate audio (.mp3) + transcript (.txt) in audio/
       - name: Generate MP3 + transcript
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          # Optional: if you set this, it overrides VOICE_NAME in the script
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: |
           python scripts/generate_brief.py
@@ -49,7 +49,7 @@ jobs:
             --show-description "Weekly AI news analysis and strategic insights for business leaders" \
             --language "en-us"
 
-      # 5) Commit only MP3 + feed (intentionally DO NOT commit .txt)
+      # 5) Commit only MP3 + feed (intentionally NOT committing .txt or .docx)
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
@@ -58,85 +58,76 @@ jobs:
             audio/*.mp3
             feed.xml
 
-      # 6) Find latest transcript + build metadata for email
+      # 6) Find latest transcript and build metadata
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
         run: |
           set -euo pipefail
-          # Confirm we have at least one transcript
-          if ! ls -1 audio/*.txt >/dev/null 2>&1; then
-            echo "No transcript .txt found in audio/. Exiting early."
-            exit 1
+          shopt -s nullglob
+          files=(audio/*.txt)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
           LATEST_MP3="${LATEST_TXT%.txt}.mp3"
+          LATEST_DOCX="${LATEST_TXT%.txt}.docx"
 
-          # Extract yyyymmdd stamp from filename tail (e.g. *_20250915.txt)
-          STAMP="${LATEST_TXT##*_}"
-          STAMP="${STAMP%.txt}"
+          base="$(basename "$LATEST_TXT")"
+          STAMP="${base##*_}"       # e.g., ai_news_20250915.txt -> 20250915.txt
+          STAMP="${STAMP%.txt}"     # -> 20250915
 
-          # Nice date via Python for portability
-          READABLE_DATE="$(python - <<'PY'
-import datetime, os
-s = os.environ["STAMP"]
-d = datetime.datetime.strptime(s, "%Y%m%d")
-print(d.strftime("%A, %B %d, %Y"))
-PY
-)"
+          READABLE_DATE="$(python -c "import datetime; s='$STAMP'; d=datetime.datetime.strptime(s, '%Y%m%d'); print(d.strftime('%A, %B %d, %Y'))")"
 
           echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
+          echo "docx=$LATEST_DOCX" >> "$GITHUB_OUTPUT"
           echo "mp3file=$(basename "$LATEST_MP3")" >> "$GITHUB_OUTPUT"
           echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
 
-      # 7) Load transcript into $GITHUB_ENV safely (no delimiter mismatch)
+      # 7) Read transcript into env (collision-proof delimiter)
       - name: Read transcript into env
-        if: steps.latest.outputs.txt
+        if: steps.latest.outputs.found == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          DELIM="__TRANSCRIPT_$(date +%s%N)__"
+          DELIM="__TRANSCRIPT_$(date +%s%N)_$$__"
           {
             printf 'TRANSCRIPT<<%s\n' "$DELIM"
             cat "${{ steps.latest.outputs.txt }}"
             printf '%s\n' "$DELIM"
           } >> "$GITHUB_ENV"
 
-      # 8) Build a .docx version of the transcript (not committed)
+      # 8) Build .docx transcript (not committed)
       - name: Build .docx transcript
-        id: docx
-        if: steps.latest.outputs.txt
-        shell: bash
+        if: steps.latest.outputs.found == 'true'
         run: |
-          set -euo pipefail
-          IN_TXT="${{ steps.latest.outputs.txt }}"
-          OUT_DOCX="${IN_TXT%.txt}.docx"
-          TITLE="AI Executive Brief — ${{ steps.latest.outputs.date_readable }}"
-          python scripts/make_docx.py "$IN_TXT" "$OUT_DOCX" "$TITLE"
-          echo "docx=$OUT_DOCX" >> "$GITHUB_OUTPUT"
+          python scripts/make_docx.py "${{ steps.latest.outputs.txt }}" "${{ steps.latest.outputs.docx }}"
 
-      # 9) Email: body includes full transcript (with links), attach .docx
+      # 9) Email transcript (inline body + .docx attachment only)
       - name: Email transcript
-        if: steps.latest.outputs.txt
+        if: steps.latest.outputs.found == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
+          secure: true
           from: ${{ secrets.EMAIL_FROM }}
           to: ${{ secrets.EMAIL_TO }}
           subject: "AI Executive Brief — ${{ steps.latest.outputs.date_readable }}"
-          secure: true
-          attachments: ${{ steps.docx.outputs.docx }}
-          body: |
-            Hi,
-
-            Your new AI Executive Brief is ready.
-
-            • Feed: https://kyledeguire.github.io/ai-news-audio-feed/feed.xml
-            • Audio: https://kyledeguire.github.io/ai-news-audio-feed/audio/${{ steps.latest.outputs.mp3file }}
-
-            ——— Transcript ———
-            ${{ env.TRANSCRIPT }}
+          attachments: ${{ steps.latest.outputs.docx }}
+          html_body: |
+            <p>New episode is ready.</p>
+            <p><strong>Episode date:</strong> ${{ steps.latest.outputs.date_readable }}<br/>
+               <strong>Feed:</strong> <a href="https://kyledeguire.github.io/ai-news-audio-feed/feed.xml">Podcast RSS</a><br/>
+               <strong>Audio:</strong> <a href="https://kyledeguire.github.io/ai-news-audio-feed/audio/${{ steps.latest.outputs.mp3file }}">Listen</a>
+            </p>
+            <hr/>
+            <h3>Transcript</h3>
+            <pre style="white-space:pre-wrap;font-family:ui-monospace,Menlo,Consolas,monospace;">
+${{ env.TRANSCRIPT }}
+            </pre>
