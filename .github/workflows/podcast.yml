@@ -32,7 +32,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }} # optional; empty is fine
+          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: |
           python scripts/generate_brief.py
 
@@ -57,7 +57,7 @@ jobs:
             audio/*.txt
             feed.xml
 
-      # --- Find latest transcript and build a few fields for email
+      # --- Find latest transcript and build email meta
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
@@ -74,12 +74,10 @@ jobs:
           LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
           LATEST_MP3="${LATEST_TXT%.txt}.mp3"
 
-          # stamp = yyyymmdd pulled from filename suffix (e.g., ai_news_20250915.txt)
           base="$(basename "$LATEST_TXT")"
-          STAMP="${base##*_}"       # 20250915.txt
-          STAMP="${STAMP%.txt}"     # 20250915
+          STAMP="${base##*_}"       # e.g., ai_news_20250915.txt
+          STAMP="${STAMP%.txt}"     # -> 20250915
 
-          # Nice date (e.g., Monday, September 15, 2025) without heredoc
           READABLE_DATE="$(python -c "import datetime; s='$STAMP'; d=datetime.datetime.strptime(s, '%Y%m%d'); print(d.strftime('%A, %B %d, %Y'))")"
 
           echo "txt=$LATEST_TXT" >> "$GITHUB_OUTPUT"
@@ -87,7 +85,20 @@ jobs:
           echo "date_readable=$READABLE_DATE" >> "$GITHUB_OUTPUT"
           echo "found=true" >> "$GITHUB_OUTPUT"
 
-      # --- Email the transcript (as attachment). We can add full body later if you want.
+      # --- Read transcript into env for inline email body
+      - name: Read transcript into env
+        if: steps.latest.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DELIM="$(uuidgen | tr -d '-')"
+          {
+            echo "TRANSCRIPT<<$DELIM"
+            cat "${{ steps.latest.outputs.txt }}"
+            echo "$DELIM"
+          } >> "$GITHUB_ENV"
+
+      # --- Email transcript (inline body + attachment)
       - name: Email transcript
         if: steps.latest.outputs.found == 'true'
         uses: dawidd6/action-send-mail@v3
@@ -96,14 +107,17 @@ jobs:
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          secure: true                # 465=SSL true, 587=TLS true is also fine
+          secure: true
           from: ${{ secrets.EMAIL_FROM }}
           to: ${{ secrets.EMAIL_TO }}
           subject: "AI Executive Brief transcript — ${{ steps.latest.outputs.date_readable }}"
           attachments: ${{ steps.latest.outputs.txt }}
           body: |
-            New episode transcript attached.
+            New episode transcript below (and attached).
 
             Episode date: ${{ steps.latest.outputs.date_readable }}
             Feed: https://kyledeguire.github.io/ai-news-audio-feed/feed.xml
             Audio: https://kyledeguire.github.io/ai-news-audio-feed/audio/${{ steps.latest.outputs.mp3file }}
+
+            ---- Transcript ----
+            ${{ env.TRANSCRIPT }}
