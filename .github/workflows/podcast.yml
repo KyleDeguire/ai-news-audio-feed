@@ -89,18 +89,17 @@ jobs:
           echo "found=true" >> "$GITHUB_OUTPUT"
 
       # --- Read transcript into env for inline email body (clickable links)
-      - name: Read transcript into env
-        if: steps.latest.outputs.found == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          DELIM="$(uuidgen | tr -d '-')"
-          {
-            echo "TRANSCRIPT<<$DELIM"
-            cat "${{ steps.latest.outputs.txt }}"
-            echo "$DELIM"
-          } >> "$GITHUB_ENV"
-
+     - name: Read transcript into env
+  if: steps.latest.outputs.found == 'true'
+  shell: bash
+  run: |
+    set -euo pipefail
+    {
+      echo 'TRANSCRIPT<<EOF_TRANSCRIPT'
+      cat "${{ steps.latest.outputs.txt }}"
+      echo 'EOF_TRANSCRIPT'
+    } >> "$GITHUB_ENV"
+    
       # --- Build .docx transcript with live links
       - name: Build .docx transcript
         if: steps.latest.outputs.found == 'true'
