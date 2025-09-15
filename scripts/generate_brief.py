@@ -8,8 +8,8 @@ AUDIO_DIR   = "audio"
 # Text generation (OpenAI)
 MODEL_TEXT  = "gpt-4o-mini"        # for writing the script
 
-# ElevenLabs TTS
-VOICE_NAME  = "Hannah"             # <- change to try other voices (e.g., "Aria", "Emma", "Charlotte")
+# ElevenLabs TTS (we’ll prefer ELEVENLABS_VOICE_ID from env if provided)
+VOICE_NAME  = "Hannah"             # friendly name only (used if no env id set)
 MODEL_TTS   = "eleven_multilingual_v2"  # v2 multilingual
 SPEED       = 1.0                  # 0.9–1.1 are safe; keep 1.0 for neutral pacing
 STABILITY   = 0.4                  # 0.0-1.0; lower = more expressive, higher = steadier
@@ -19,14 +19,12 @@ SPEAKER_BOOST = True
 
 TARGET_MIN  = 4.5                  # 4–5 minutes ≈ 700–900 words
 
-# Map friendly names to your actual ElevenLabs Voice IDs
-# Get each ID from ElevenLabs Dashboard → Voices → (Voice) → Voice ID
+# Optional mapping if you want to hard-code IDs later
 VOICE_ID_MAP = {
-    "Hannah":    "<PUT_HANNAH_VOICE_ID_HERE>",
-    "Aria":      "<PUT_ARIA_VOICE_ID_HERE>",
-    "Emma":      "<PUT_EMMA_VOICE_ID_HERE>",
-    "Charlotte": "<PUT_CHARLOTTE_VOICE_ID_HERE>",
-    # add more as you test
+    "Hannah":    "",   # put a real id here if you prefer hard-coding
+    "Aria":      "",
+    "Emma":      "",
+    "Charlotte": "",
 }
 
 # Light headline sources (optional context)
@@ -38,7 +36,8 @@ SOURCES = [
 
 # ===== Helpers =====
 def denver_date_today():
-    denver = datetime.timezone(datetime.timedelta(hours=-6))  # gate handles DST in workflow; date stays correct
+    # Workflow cron handles timing; we keep date display consistent
+    denver = datetime.timezone(datetime.timedelta(hours=-6))
     return datetime.datetime.now(datetime.timezone.utc).astimezone(denver).date()
 
 def monday_stamp():
@@ -72,9 +71,7 @@ def openai_chat(api_key, model, messages):
     return r.json()["choices"][0]["message"]["content"]
 
 def elevenlabs_tts(api_key, voice_id, text, out_path):
-    # v2 Multilingual TTS API
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
-    # Style controls for v2 model
     payload = {
         "model_id": MODEL_TTS,
         "text": text,
@@ -85,17 +82,11 @@ def elevenlabs_tts(api_key, voice_id, text, out_path):
             "use_speaker_boost": SPEAKER_BOOST
         },
         "optimize_streaming_latency": 1,
-        "output_format": "mp3_44100_128",  # good podcast default
-        "voice_temperature": None,
-        "seed": None
+        "output_format": "mp3_44100_128"
+        # Some plans support speaking rate; if yours does, uncomment:
+        # ,"speaking_rate": SPEED
     }
-    # Speed is supported via "speaking_rate" on some plans; if your account supports it, uncomment:
-    # payload["speaking_rate"] = SPEED
-
-    headers = {
-        "xi-api-key": api_key,
-        "Content-Type": "application/json"
-    }
+    headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
     with requests.post(url, headers=headers, data=json.dumps(payload), stream=True) as r:
         r.raise_for_status()
         with open(out_path, "wb") as f:
@@ -111,13 +102,18 @@ def main():
     if not el_key:
         print("Missing ELEVENLABS_API_KEY", file=sys.stderr); sys.exit(1)
 
-    # Validate voice choice
-    if VOICE_NAME not in VOICE_ID_MAP or not VOICE_ID_MAP[VOICE_NAME] or VOICE_ID_MAP[VOICE_NAME].startswith("<PUT_"):
-        print(f"VOICE_NAME='{VOICE_NAME}' is not mapped to a real ElevenLabs Voice ID in VOICE_ID_MAP.", file=sys.stderr)
-        sys.exit(1)
-    voice_id = VOICE_ID_MAP[VOICE_NAME]
+    # Voice ID resolution (env wins; else fallback map)
+    env_voice_id = os.environ.get("ELEVENLABS_VOICE_ID", "").strip()
+    if env_voice_id:
+        voice_id = env_voice_id
+    else:
+        vid = VOICE_ID_MAP.get(VOICE_NAME, "")
+        if not vid:
+            print("No ELEVENLABS_VOICE_ID in env and VOICE_ID_MAP entry is empty.", file=sys.stderr)
+            sys.exit(1)
+        voice_id = vid
 
-    # Build the brief spec (your latest structure)
+    # Build your brief spec (4–5 minutes, exact intro, 5 sections)
     brief_spec = f"""You are a strategic AI analyst preparing a weekly briefing for business executives,
 strategy consultants, AI adoption strategists, and solutions consultants.
 
@@ -165,12 +161,9 @@ Optional context to consider (only if genuinely useful; otherwise ignore):
     mp3_path = Path(AUDIO_DIR)/fname
     txt_path = Path(AUDIO_DIR)/f"{Path(fname).stem}.txt"
 
-    # ElevenLabs TTS with selected voice
     elevenlabs_tts(el_key, voice_id, script, mp3_path)
-
-    # Save transcript for your email step
     txt_path.write_text(script, encoding="utf-8")
-    print(f"Wrote {mp3_path} and {txt_path} using ElevenLabs voice '{VOICE_NAME}'")
+    print(f"Wrote {mp3_path} and {txt_path} using ElevenLabs voice id '{voice_id}'")
 
 if __name__ == "__main__":
     main()
