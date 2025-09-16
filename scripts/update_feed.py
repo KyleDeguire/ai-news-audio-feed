@@ -24,6 +24,7 @@ def load_stamp():
     s = os.environ.get("STAMP")
     if s:
         return s
+    
     # Fallback: try to infer from newest audio filename like ai_news_YYYYMMDD.mp3
     mp3s = sorted(AUDIO_DIR.glob("*.mp3"), key=os.path.getmtime, reverse=True)
     if mp3s:
@@ -33,6 +34,7 @@ def load_stamp():
         m = re.search(r"(\d{8})$", name)
         if m:
             return m.group(1)
+    
     return None
 
 def nice_title_from_stamp(stamp):
@@ -57,67 +59,84 @@ def find_latest_mp3_by_stamp(stamp):
         if candidates:
             # return the newest matching file
             return sorted(candidates, key=os.path.getmtime, reverse=True)[0]
+    
     # fallback: newest mp3
     mp3s = sorted(AUDIO_DIR.glob("*.mp3"), key=os.path.getmtime, reverse=True)
     return mp3s[0] if mp3s else None
 
 def register_namespaces():
     # Use common prefixes to avoid ElementTree creating ns0, ns1, etc.
-    # Do NOT try to register 'ns0' (reserved); register a readable prefix instead.
     ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
+
+def create_proper_feed():
+    """Create a properly structured RSS feed"""
+    rss = ET.Element("rss", {"version": "2.0"})
+    rss.set("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
+    
+    channel = ET.SubElement(rss, "channel")
+    
+    # Channel metadata (must come first)
+    ET.SubElement(channel, "title").text = "AI News Weekly -- Executive Briefing"
+    ET.SubElement(channel, "description").text = "Weekly AI news analysis and strategic insights for business leaders"
+    ET.SubElement(channel, "link").text = f"{BASE_URL}/"
+    ET.SubElement(channel, "language").text = "en-us"
+    ET.SubElement(channel, "lastBuildDate").text = rfc2822_now_gmt()
+    
+    # iTunes specific tags
+    itunes_image = ET.SubElement(channel, "itunes:image")
+    itunes_image.set("href", f"{BASE_URL}/artwork/cover.jpg")
+    
+    itunes_category = ET.SubElement(channel, "itunes:category")
+    itunes_category.set("text", "News")
+    itunes_sub_category = ET.SubElement(itunes_category, "itunes:category")
+    itunes_sub_category.set("text", "Tech News")
+    
+    ET.SubElement(channel, "itunes:explicit").text = "false"
+    
+    tree = ET.ElementTree(rss)
+    tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
+    return tree
 
 def ensure_feed_exists():
     if not FEED_PATH.exists():
-        # create a minimal template feed if missing
-        channel = ET.Element("channel")
-        ET.SubElement(channel, "title").text = "AI News Weekly – Executive Briefing"
-        ET.SubElement(channel, "link").text = f"{BASE_URL}/"
-        ET.SubElement(channel, "description").text = "Weekly AI news analysis and strategic insights for business leaders"
-        ET.SubElement(channel, "language").text = "en-us"
-        tree = ET.ElementTree(ET.Element("rss", {"version": "2.0"}))
-        tree.getroot().append(channel)
-        tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
+        create_proper_feed()
 
 def main():
     register_namespaces()
     ensure_feed_exists()
-
+    
     stamp = load_stamp()
     if not stamp:
         print("ERROR: STAMP not found and no audio files to infer from.", file=sys.stderr)
         sys.exit(1)
-
+    
     mp3_path = find_latest_mp3_by_stamp(stamp)
     if not mp3_path or not mp3_path.exists():
         print("ERROR: No MP3 found for stamp:", stamp, file=sys.stderr)
         sys.exit(1)
-
+    
     mp3_basename = mp3_path.name
     mp3_url = f"{BASE_URL}/audio/{mp3_basename}"
     mp3_size = str(mp3_path.stat().st_size)
-
+    
     # guid derive (unique per new episode)
     guid_text = mp3_basename.replace(".mp3", "")
-
+    
     # parse feed
     tree = ET.parse(FEED_PATH)
     root = tree.getroot()
+    
     # find channel (rss -> channel)
     channel = root.find("channel")
     if channel is None:
-        # try with namespace fallback
-        for c in root:
-            if c.tag.lower().endswith("channel"):
-                channel = c
-                break
-    if channel is None:
         print("ERROR: feed.xml missing <channel>", file=sys.stderr)
         sys.exit(1)
-
+    
     # check for existing guid (avoid duplicates)
     existing_guids = { (item.find("guid").text if item.find("guid") is not None else "") for item in channel.findall("item") }
+    
     if guid_text in existing_guids:
-        print(f"Episode for guid {guid_text} already in feed — skipping append.")
+        print(f"Episode for guid {guid_text} already in feed --- skipping append.")
         # still update lastBuildDate to current time so feed consumers might see freshness
         last = channel.find("lastBuildDate")
         if last is None:
@@ -125,46 +144,55 @@ def main():
         last.text = rfc2822_now_gmt()
         tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
         sys.exit(0)
-
+    
     # Construct new item
     item = ET.Element("item")
+    
     title = ET.SubElement(item, "title")
     title.text = nice_title_from_stamp(stamp)
-
+    
     desc = ET.SubElement(item, "description")
     desc.text = "Executive Briefing: AI Market Trends and Strategic Insights"
-
+    
     link = ET.SubElement(item, "link")
     link.text = f"{BASE_URL}/"
-
+    
     enclosure = ET.SubElement(item, "enclosure")
     enclosure.set("url", mp3_url)
     enclosure.set("length", mp3_size)
     enclosure.set("type", "audio/mpeg")
-
+    
     pubDate = ET.SubElement(item, "pubDate")
     pubDate.text = pretty_pubdate_from_stamp(stamp)
-
+    
     guid = ET.SubElement(item, "guid")
     guid.text = guid_text
     guid.set("isPermaLink", "false")
-
-    # insert the new item at the top (before any existing items) so feed is newest-first
+    
+    # iTunes episode metadata
+    ET.SubElement(item, "itunes:explicit").text = "false"
+    ET.SubElement(item, "itunes:episodeType").text = "full"
+    
+    # Find the right place to insert item (after all channel metadata, before closing channel tag)
+    # Insert right before the first existing item, or append if no items exist
     first_item = channel.find("item")
     if first_item is not None:
         # insert before first_item
         channel.insert(list(channel).index(first_item), item)
     else:
+        # append at end
         channel.append(item)
-
+    
     # update lastBuildDate to now
     last = channel.find("lastBuildDate")
     if last is None:
         last = ET.SubElement(channel, "lastBuildDate")
     last.text = rfc2822_now_gmt()
-
-    # write back
+    
+    # write back with proper formatting
+    ET.indent(tree, space="  ")
     tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
+    
     print("Appended new item to feed:", mp3_basename)
     sys.exit(0)
 
