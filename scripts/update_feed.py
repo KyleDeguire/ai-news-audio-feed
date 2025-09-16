@@ -1,118 +1,116 @@
 #!/usr/bin/env python3
-import sys, re, time
-from datetime import datetime, timezone
+"""
+Deterministic feed updater:
+- Finds newest audio/ai_news_YYYYMMDD.mp3 (by stamp in filename; fallback mtime)
+- PREPENDS a brand-new <item> (does not mutate prior items)
+- Sets unique <guid isPermaLink="false">ai_news_YYYYMMDD</guid>
+- Sets <title>AI Executive Brief - DD Mon, YYYY</title>
+- Sets <pubDate> to now (RFC 2822)
+- Points <enclosure> to the exact mp3 URL, sets type and length
+- Updates channel <lastBuildDate> to now
+- Leaves existing channel metadata and older items intact
+"""
+
+from __future__ import annotations
+import re, sys
 from pathlib import Path
+from datetime import datetime, timezone
+import email.utils as eut
 import xml.etree.ElementTree as ET
 
-FEED = Path("feed.xml")
+REPO_BASE = "https://kyledeguire.github.io/ai-news-audio-feed"
+FEED_PATH = Path("feed.xml")
 AUDIO_DIR = Path("audio")
 
-# ---- helpers ----
-def rfc2822_now(dt=None):
-    if dt is None:
-        dt = datetime.now(timezone.utc)
-    # Example: Mon, 15 Sep 2025 12:00:00 GMT
-    return dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
+STAMP_RE = re.compile(r"ai_news_(\d{8})\.mp3$", re.IGNORECASE)
 
-def stamp_from_filename(name: str):
-    m = re.search(r"ai_news_(\d{8})\.mp3$", name)
-    return m.group(1) if m else None  # e.g. '20250915'
+def rfc2822_now() -> str:
+    return eut.format_datetime(datetime.now(timezone.utc), usegmt=True)
 
-def newest_mp3():
-    mp3s = sorted(AUDIO_DIR.glob("ai_news_*.mp3"))
-    if not mp3s:
-        return None
-    return mp3s[-1]  # filenames are date-stamped; last sorts newest
+def human_date_from_stamp(stamp: str) -> str:
+    d = datetime.strptime(stamp, "%Y%m%d")
+    return d.strftime("%d %b, %Y")  # e.g., 15 Sep, 2025
 
-# ---- find newest audio ----
-mp3 = newest_mp3()
-if not mp3:
-    print("No MP3 found in audio/. Nothing to do.")
-    sys.exit(0)
+def pick_latest_mp3() -> Path:
+    # Prefer stamped filenames; else fallback to newest by mtime
+    stamped = sorted(AUDIO_DIR.glob("ai_news_*.mp3"))
+    if stamped:
+        # sort by numeric stamp ascending, take last
+        stamped = sorted(stamped, key=lambda p: STAMP_RE.search(p.name).group(1) if STAMP_RE.search(p.name) else p.name)
+        return stamped[-1]
+    all_mp3 = sorted(AUDIO_DIR.glob("*.mp3"), key=lambda p: p.stat().st_mtime)
+    if not all_mp3:
+        sys.exit("No MP3 found under audio/")
+    return all_mp3[-1]
 
-stamp = stamp_from_filename(mp3.name)
-if not stamp:
-    print(f"MP3 name does not match ai_news_YYYYMMDD.mp3: {mp3.name}")
-    sys.exit(1)
+def ensure_channel(root: ET.Element) -> ET.Element:
+    ch = root.find("channel")
+    if ch is None:
+        ch = ET.SubElement(root, "channel")
+    return ch
 
-guid_new = f"ai_news_{stamp}"
-enclosure_url = f"https://kyledeguire.github.io/ai-news-audio-feed/audio/{mp3.name}"
+def main():
+    if not FEED_PATH.exists():
+        sys.exit("feed.xml missing")
 
-# ---- parse feed ----
-if not FEED.exists():
-    print("feed.xml is missing.")
-    sys.exit(1)
+    mp3 = pick_latest_mp3()
+    mp3_name = mp3.name
+    m = STAMP_RE.search(mp3_name)
+    if not m:
+        sys.exit(f"MP3 does not match ai_news_YYYYMMDD.mp3: {mp3_name}")
+    stamp = m.group(1)
+    guid_text = f"ai_news_{stamp}"
+    enclosure_url = f"{REPO_BASE}/audio/{mp3_name}"
+    enclosure_len = str(mp3.stat().st_size)
+    now_rfc = rfc2822_now()
+    title_text = f"AI Executive Brief - {human_date_from_stamp(stamp)}"
 
-tree = ET.parse(FEED)
-root = tree.getroot()
+    # Parse without registering any prefixes; we won't touch itunes tags
+    tree = ET.parse(FEED_PATH)
+    root = tree.getroot()
+    channel = ensure_channel(root)
 
-# Resolve namespaces already present in your feed (itunes etc.)
-nsmap = {}
-for k, v in root.attrib.items():
-    # not needed; just keeping future-proof parsing simple
-    pass
+    # Collect existing GUIDs to avoid dup insertion
+    existing_guids = {g.text for g in channel.findall("item/guid") if g is not None and g.text}
+    if guid_text in existing_guids:
+        # Already present. Just bump lastBuildDate and exit.
+        lbd = channel.find("lastBuildDate")
+        if lbd is None: lbd = ET.SubElement(channel, "lastBuildDate")
+        lbd.text = now_rfc
+        tree.write(FEED_PATH, encoding="utf-8", xml_declaration=True)
+        print(f"[update_feed] GUID already present: {guid_text}. Refreshed lastBuildDate.")
+        return
 
-# Find <channel>
-channel = root.find("channel")
-if channel is None:
-    print("feed.xml has no <channel> element.")
-    sys.exit(1)
+    # Build a brand-new item
+    item = ET.Element("item")
+    ET.SubElement(item, "title").text = title_text
+    ET.SubElement(item, "description").text = "Executive Briefing: AI Market Trends and Strategic Insights"
+    ET.SubElement(item, "pubDate").text = now_rfc
+    g = ET.SubElement(item, "guid", attrib={"isPermaLink": "false"})
+    g.text = guid_text
+    enc = ET.SubElement(item, "enclosure", attrib={
+        "url": enclosure_url,
+        "type": "audio/mpeg",
+        "length": enclosure_len
+    })
 
-# Gather existing GUIDs to avoid duplicates
-existing_guids = {g.text for g in channel.findall("item/guid") if g is not None and g.text}
+    # Prepend: insert before first existing <item>, else append
+    inserted = False
+    for idx, child in enumerate(list(channel)):
+        if child.tag == "item":
+            channel.insert(idx, item)
+            inserted = True
+            break
+    if not inserted:
+        channel.append(item)
 
-if guid_new in existing_guids:
-    # Already published this exact episode; make sure lastBuildDate is fresh anyway
+    # Update channel lastBuildDate
     lbd = channel.find("lastBuildDate")
-    if lbd is None:
-        lbd = ET.SubElement(channel, "lastBuildDate")
-    lbd.text = rfc2822_now()
-    tree.write(FEED, encoding="utf-8", xml_declaration=True)
-    print(f"GUID {guid_new} already exists; refreshed lastBuildDate.")
-    sys.exit(0)
+    if lbd is None: lbd = ET.SubElement(channel, "lastBuildDate")
+    lbd.text = now_rfc
 
-# ---- build a new <item> (prepend) ----
-item = ET.Element("item")
+    tree.write(FEED_PATH, encoding="utf-8", xml_declaration=True)
+    print(f"[update_feed] Prepended item: {guid_text} -> {enclosure_url}")
 
-title = ET.SubElement(item, "title")
-title.text = f"AI Executive Brief - {datetime.strptime(stamp, '%Y%m%d').strftime('%d %b, %Y')}"
-
-description = ET.SubElement(item, "description")
-# keep your short synopsis; you can expand if you want
-description.text = "Executive Briefing: AI Market Trends and Strategic Insights"
-
-pubDate = ET.SubElement(item, "pubDate")
-pubDate.text = rfc2822_now()
-
-guid = ET.SubElement(item, "guid", attrib={"isPermaLink": "false"})
-guid.text = guid_new
-
-enclosure = ET.SubElement(item, "enclosure", attrib={
-    "url": enclosure_url,
-    "type": "audio/mpeg"
-})
-# (Length is optional; most apps don’t require it. Add if you really want:
-# enclosure.set("length", str(mp3.stat().st_size)))
-
-# Insert the new item right after channel metadata (before older items)
-# Find index of the first existing <item>
-first_item_idx = None
-for idx, child in enumerate(list(channel)):
-    if child.tag == "item":
-        first_item_idx = idx
-        break
-
-if first_item_idx is None:
-    channel.append(item)
-else:
-    channel.insert(first_item_idx, item)
-
-# Update <lastBuildDate>
-lbd = channel.find("lastBuildDate")
-if lbd is None:
-    lbd = ET.SubElement(channel, "lastBuildDate")
-lbd.text = rfc2822_now()
-
-# Write back
-tree.write(FEED, encoding="utf-8", xml_declaration=True)
-print(f"Published new item: {guid_new} -> {enclosure_url}")
+if __name__ == "__main__":
+    main()
