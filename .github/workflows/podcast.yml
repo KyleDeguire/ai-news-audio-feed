@@ -31,9 +31,9 @@ jobs:
       # --- Generate audio + transcript (.mp3 and .txt in audio/)
       - name: Generate MP3 + transcript
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
+          OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
+          ELEVENLABS_API_KEY:   ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_VOICE_ID:  ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: |
           python scripts/generate_brief.py
 
@@ -56,7 +56,7 @@ jobs:
           echo "date_readable=${READABLE_DATE}" >> "$GITHUB_OUTPUT"
 
       # --- Update feed.xml using the exact mp3 filename we just found
-      - name: Update feed.xml
+      - name: Update feed.xml (point enclosure to latest mp3)
         run: |
           python scripts/update_feed.py \
             --repo-url "https://kyledeguire.github.io/ai-news-audio-feed" \
@@ -67,6 +67,12 @@ jobs:
             --language "en-us" \
             --audio-file "${{ steps.latest.outputs.mp3file }}"
 
+      # --- AUTO NUDGE: bump channel lastBuildDate and latest item pubDate to 'now'
+      # This helps slow directories refresh without changing GUID or audio.
+      - name: Nudge feed timestamps
+        run: |
+          python scripts/nudge_feed.py
+
       # --- Commit site assets (publish mp3 + feed to Pages)
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
@@ -76,7 +82,7 @@ jobs:
             audio/*.mp3
             feed.xml
 
-      # --- Compute .docx path safely (no expression tricks)
+      # --- Compute .docx path safely
       - name: Compute .docx path
         id: paths
         shell: bash
