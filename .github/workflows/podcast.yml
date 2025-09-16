@@ -60,7 +60,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # ensure we actually have a transcript
           if ls -1 audio/*.txt >/dev/null 2>&1; then
             LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
             LATEST_MP3="${LATEST_TXT%.txt}.mp3"
@@ -88,7 +87,7 @@ PY
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # 8) Read transcript into $GITHUB_ENV safely (no fragile delimiters)
+      # 8) Read transcript into $GITHUB_ENV safely
       - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
@@ -99,7 +98,7 @@ PY
             echo "EOF"
           } >> "$GITHUB_ENV"
 
-      # 9) Compute .docx path for attachment (optional helper)
+      # 9) Compute .docx path
       - name: Compute .docx path
         if: steps.latest.outputs.found == 'true'
         id: docx
@@ -109,7 +108,7 @@ PY
           OUT="audio/${{ steps.latest.outputs.mp3file%.mp3 }}.docx"
           echo "out=$OUT" >> "$GITHUB_OUTPUT"
 
-      # 10) Build .docx transcript (from env TRANSCRIPT)
+      # 10) Build .docx transcript
       - name: Build .docx transcript
         if: steps.latest.outputs.found == 'true'
         run: |
@@ -117,18 +116,18 @@ PY
             --input "${{ steps.latest.outputs.txt }}" \
             --output "${{ steps.docx.outputs.out }}"
 
-      # 11) Email transcript (.docx attached, full body)
+      # 11) Email transcript
       - name: Email transcript
         if: steps.latest.outputs.found == 'true'
         env:
-          SMTP_SERVER:  ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT:    ${{ secrets.SMTP_PORT }}
-          SMTP_USERNAME:${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD:${{ secrets.SMTP_PASSWORD }}
-          EMAIL_FROM:   ${{ secrets.EMAIL_FROM }}
-          EMAIL_TO:     ${{ secrets.EMAIL_TO }}
-          SUBJECT:      AI Executive Brief transcript – ${{ steps.latest.outputs.date_readable }}
-          BODY_TEXT:    ${{ env.TRANSCRIPT }}
-          ATTACH_PATH:  ${{ steps.docx.outputs.out }}
+          SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT:     ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM:    ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO:      ${{ secrets.EMAIL_TO }}
+          SUBJECT:       AI Executive Brief transcript – ${{ steps.latest.outputs.date_readable }}
+          BODY_TEXT:     ${{ env.TRANSCRIPT }}
+          ATTACH_PATH:   ${{ steps.docx.outputs.out }}
         run: |
           python scripts/send_email.py
