@@ -2,3 +2,4 @@ openai>=1.40.0
 requests>=2.31.0
 feedparser>=6.0.10
 python-docx==0.8.11
+pytz>=2023.3
