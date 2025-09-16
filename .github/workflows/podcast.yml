@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # -------- Generate MP3 + transcript ----------
+      # ---------- Generate MP3 + transcript ----------
       - name: Generate MP3 + transcript
         env:
           OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
@@ -36,11 +36,8 @@ jobs:
           set -euo pipefail
           python scripts/generate_brief.py
 
-      # -------- Update feed.xml to latest mp3 ----------
+      # ---------- Update feed.xml to latest mp3 ----------
       - name: Update feed.xml (point enclosure to latest mp3)
-        env:
-          MP3_BASENAME: ${{ env.MP3_BASENAME }}
-          STAMP:        ${{ env.STAMP }}
         run: |
           set -euo pipefail
           python scripts/update_feed.py
@@ -54,30 +51,23 @@ jobs:
             audio/*.txt
             feed.xml
 
-      # -------- Find latest transcript & build email meta ----------
+      # ---------- Find latest transcript & build email meta ----------
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
         run: |
           set -euo pipefail
-
           if ls -1 audio/*.txt >/dev/null 2>&1; then
             LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
             LATEST_MP3="${LATEST_TXT%.txt}.mp3"
 
-            # Extract yyyymmdd from filename suffix: ai_news_YYYYMMDD.txt
+            # Extract yyyymmdd at the end of the filename (ai_news_YYYYMMDD.txt)
             STAMP="$(basename "$LATEST_TXT")"
             STAMP="${STAMP##*_}"
             STAMP="${STAMP%.txt}"
 
-            # Make a readable date with Python (portable)
-            READABLE_DATE="$(python - <<'PY'
-import os, datetime
-s = os.environ['STAMP']
-d = datetime.datetime.strptime(s, "%Y%m%d")
-print(d.strftime("%A, %b %d, %Y"))
-PY
-)"
+            READABLE_DATE="$(python -c "import os,datetime; s=os.getenv('STAMP'); d=datetime.datetime.strptime(s,'%Y%m%d'); print(d.strftime('%A, %b %d, %Y'))" )"
+
             {
               echo "txt=$LATEST_TXT"
               echo "mp3=$(basename "$LATEST_MP3")"
@@ -89,24 +79,20 @@ PY
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # -------- Read transcript into $GITHUB_ENV safely ----------
+      # ---------- Read transcript into $GITHUB_ENV safely ----------
       - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          # Generate a safe, unique delimiter in Python (avoids 'matching delimiter not found')
-          DELIM="$(python - <<'PY'
-import uuid; print(str(uuid.uuid4()))
-PY
-)"
+          DELIM="$(python -c 'import uuid; print(uuid.uuid4())')"
           {
             echo "TRANSCRIPT<<$DELIM"
             cat "${{ steps.latest.outputs.txt }}"
             echo "$DELIM"
           } >> "$GITHUB_ENV"
 
-      # -------- Compute .docx path ----------
+      # ---------- Compute .docx path ----------
       - name: Compute .docx path
         if: steps.latest.outputs.found == 'true'
         id: docx
@@ -117,7 +103,7 @@ PY
           out="${base%.txt}.docx"
           echo "out=$out" >> "$GITHUB_OUTPUT"
 
-      # -------- Build .docx transcript ----------
+      # ---------- Build .docx transcript ----------
       - name: Build .docx transcript
         if: steps.latest.outputs.found == 'true'
         run: |
@@ -126,7 +112,7 @@ PY
             --in "${{ steps.latest.outputs.txt }}" \
             --out "${{ steps.docx.outputs.out }}"
 
-      # -------- Email transcript (.docx attached, full body) ----------
+      # ---------- Email transcript (.docx attached, full body) ----------
       - name: Email transcript
         if: steps.latest.outputs.found == 'true'
         env:
@@ -137,12 +123,9 @@ PY
           EMAIL_FROM:    ${{ secrets.EMAIL_FROM }}
           EMAIL_TO:      ${{ secrets.EMAIL_TO }}
           SUBJECT: "AI Executive Brief transcript – ${{ steps.latest.outputs.date_readable }}"
-          BODY: |
-            Here is the transcript (links clickable) and the .docx attached.
-
-            $TRANSCRIPT
         run: |
           set -euo pipefail
+          BODY=$'Here is the transcript (links clickable) and the .docx attached.\n\n'"$TRANSCRIPT"
           python scripts/send_email.py \
             --server "$SMTP_SERVER" \
             --port "$SMTP_PORT" \
