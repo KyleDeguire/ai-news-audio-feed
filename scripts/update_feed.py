@@ -1,117 +1,101 @@
 #!/usr/bin/env python3
-import argparse, datetime as dt, email.utils as eut, os, re, sys, xml.etree.ElementTree as ET
-from pathlib import Path
+import os
+import re
+import glob
+import email.utils as eut
+import datetime as dt
+import xml.etree.ElementTree as ET
 
-NS_ITUNES = "http://www.itunes.com/dtds/podcast-1.0.dtd"
-ET.register_namespace("ns0", NS_ITUNES)  # show up as ns0: in your feed
+FEED_PATH = "feed.xml"
+AUDIO_DIR = "audio"
 
-def http_date_now():
-    # RFC 2822 / RFC 822 format expected by podcast clients
-    return eut.format_datetime(dt.datetime.utcnow(), usegmt=True)
+def latest_mp3():
+    files = sorted(glob.glob(os.path.join(AUDIO_DIR, "*.mp3")))
+    if not files:
+        raise FileNotFoundError("No MP3 files found in audio/")
+    # Sort by stamp in filename if present, else by mtime
+    def key_fn(p):
+        m = re.search(r'(\d{8})', os.path.basename(p))
+        if m:
+            return m.group(1)
+        return dt.datetime.utcfromtimestamp(os.path.getmtime(p)).strftime("%Y%m%d")
+    files.sort(key=key_fn, reverse=True)
+    return files[0]
 
-def find_latest_mp3(audio_dir: Path) -> Path | None:
-    mp3s = sorted(audio_dir.glob("*.mp3"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return mp3s[0] if mp3s else None
-
-def ensure_channel(tree: ET.ElementTree):
-    root = tree.getroot()
-    channel = root.find("channel")
-    if channel is None:
-        channel = ET.SubElement(root, "channel")
-    return channel
-
-def set_text(parent: ET.Element, tag: str, text: str):
-    el = parent.find(tag)
-    if el is None:
-        el = ET.SubElement(parent, tag)
-    el.text = text
-    return el
-
-def upsert_item_for(latest_url: str, channel: ET.Element) -> ET.Element:
-    # Try to match an existing item with same enclosure URL; otherwise create one
-    for it in channel.findall("item"):
-        enc = it.find("enclosure")
-        if enc is not None and enc.get("url") == latest_url:
-            return it
-    return ET.SubElement(channel, "item")
+def rfc2822_from_stamp(stamp: str) -> str:
+    """stamp like 20250914 -> Sun, 14 Sep 2025 12:00:00 GMT"""
+    d = dt.datetime.strptime(stamp, "%Y%m%d").replace(tzinfo=dt.timezone.utc)
+    # Noon UTC gives stable cross-platform sort; adjust if you prefer a fixed hour
+    d = d.replace(hour=12, minute=0, second=0)
+    return eut.format_datetime(d)
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--repo-url", required=True, help="Base site URL, e.g. https://kyledeguire.github.io/ai-news-audio-feed")
-    ap.add_argument("--audio-dir", default="audio")
-    ap.add_argument("--feed", default="feed.xml")
-    ap.add_argument("--show-title", default="AI News Weekly – Executive Briefing")
-    ap.add_argument("--show-description", default="Weekly AI news analysis and strategic insights for business leaders")
-    ap.add_argument("--language", default="en-us")
-    ap.add_argument("--artwork", default="artwork/cover.jpg")
-    args = ap.parse_args()
+    mp3_path = latest_mp3()
+    mp3_file = os.path.basename(mp3_path)
+    mp3_url = f"https://kyledeguire.github.io/ai-news-audio-feed/{AUDIO_DIR}/{mp3_file}"
+    mp3_len = os.path.getsize(mp3_path)
 
-    repo = args.repo_url.rstrip("/")
-    audio_dir = Path(args.audio_dir)
-    feed_path = Path(args.feed)
-
-    latest_mp3 = find_latest_mp3(audio_dir)
-    if not latest_mp3:
-        print("No MP3s found in audio/; nothing to update.", file=sys.stderr)
-        sys.exit(0)
-
-    latest_url = f"{repo}/{audio_dir.as_posix()}/{latest_mp3.name}"
-
-    # Prepare timestamps (NOW for pubDate + lastBuildDate)
-    now_rfc2822 = http_date_now()
-
-    # Create or load feed
-    if feed_path.exists():
-        tree = ET.parse(feed_path)
+    # Try to derive a pubDate from filename stamp, else from file mtime
+    m = re.search(r'(\d{8})', mp3_file)
+    if m:
+        pubdate = rfc2822_from_stamp(m.group(1))
     else:
-        rss = ET.Element("rss", {"version": "2.0", "xmlns:ns0": NS_ITUNES})
-        tree = ET.ElementTree(rss)
+        pubdate = eut.format_datetime(
+            dt.datetime.utcfromtimestamp(os.path.getmtime(mp3_path)).replace(tzinfo=dt.timezone.utc)
+        )
 
-    channel = ensure_channel(tree)
+    # Parse XML WITHOUT registering any reserved prefixes
+    tree = ET.parse(FEED_PATH)
+    root = tree.getroot()
 
-    # Static channel fields (idempotent)
-    set_text(channel, "title", "AI News Weekly – Executive Briefing")
-    set_text(channel, "description", args.show_description)
-    set_text(channel, "link", repo + "/")
-    set_text(channel, "language", args.language)
-    set_text(channel, "lastBuildDate", now_rfc2822)
+    # Build a namespace map from the existing XML (don’t register/rename anything)
+    ns = {}
+    for k, v in root.attrib.items():
+        if k.startswith("{http://www.w3.org/2000/xmlns/}"):
+            ns[k.split("}", 1)[1]] = v
+    # Helpful defaults for searches (not strictly required for what we touch)
+    itunes_prefix = next((p for p, uri in ns.items() if "itunes.com/dtds/podcast-1.0.dtd" in uri), None)
 
-    # artwork
-    image = channel.find("image")
-    if image is None:
-        image = ET.SubElement(channel, "image")
-        ET.SubElement(image, "url")
-        ET.SubElement(image, "title")
-        ET.SubElement(image, "link")
-    set_text(image, "url", f"{repo}/{args.artwork}")
-    set_text(image, "title", args.show_title)
-    set_text(image, "link", repo + "/")
+    # Get <channel> and its first <item>
+    channel = root.find("channel")
+    if channel is None:
+        raise RuntimeError("feed.xml: <channel> not found")
 
-    # Upsert latest item
-    item = upsert_item_for(latest_url, channel)
-    set_text(item, "title", f"AI Executive Brief – {dt.datetime.utcnow():%d %b, %Y}")
-    set_text(item, "description", "Executive Briefing: AI Market Trends and Strategic Insights")
-    set_text(item, "link", repo + "/")
-    set_text(item, "guid", latest_mp3.stem)  # e.g., ai_news_20250915
-    set_text(item, "pubDate", now_rfc2822)   # <-- KEY: always NOW
-    # enclosure
-    enc = item.find("enclosure")
-    if enc is None:
-        enc = ET.SubElement(item, "enclosure")
-    enc.set("url", latest_url)
-    enc.set("type", "audio/mpeg")
+    item = channel.find("item")
+    if item is None:
+        # If no item exists, create one minimally (apps still parse it fine)
+        item = ET.SubElement(channel, "item")
+        ET.SubElement(item, "title").text = "New Episode"
+        ET.SubElement(item, "description").text = "Auto-generated episode."
+        ET.SubElement(item, "guid").text = os.path.splitext(mp3_file)[0]
+        ET.SubElement(item, "enclosure")
 
-    # Try to set length (optional)
-    try:
-        size = latest_mp3.stat().st_size
-        enc.set("length", str(size))
-    except Exception:
-        pass
+    # Update enclosure
+    enclosure = item.find("enclosure")
+    if enclosure is None:
+        enclosure = ET.SubElement(item, "enclosure")
+    enclosure.set("url", mp3_url)
+    enclosure.set("type", "audio/mpeg")
+    # Optional: set length (some podcast directories like it)
+    enclosure.set("length", str(mp3_len))
 
-    # Write pretty-ish XML
-    ET.indent(tree, space="  ")  # Python 3.9+
-    tree.write(feed_path, encoding="utf-8", xml_declaration=True)
-    print(f"Updated {feed_path} with pubDate={now_rfc2822} and enclosure={latest_url}")
+    # Update pubDate on the item
+    pub = item.find("pubDate")
+    if pub is None:
+        pub = ET.SubElement(item, "pubDate")
+    pub.text = pubdate
+
+    # Update channel lastBuildDate
+    now_utc = eut.format_datetime(dt.datetime.now(dt.timezone.utc))
+    lbd = channel.find("lastBuildDate")
+    if lbd is None:
+        lbd = ET.SubElement(channel, "lastBuildDate")
+    lbd.text = now_utc
+
+    # Write back (ElementTree will preserve existing prefixes; we didn’t register anything)
+    tree.write(FEED_PATH, encoding="utf-8", xml_declaration=True)
+
+    print(f"Updated feed.xml -> {mp3_url} ({mp3_len} bytes) pubDate={pubdate}")
 
 if __name__ == "__main__":
     main()
