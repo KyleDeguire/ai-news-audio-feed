@@ -2,8 +2,7 @@ name: Weekly AI Executive Brief
 
 on:
   schedule:
-    # 14:05 UTC = 08:05 MT (MDT) / 07:05 MST
-    - cron: '5 14 * * 1'
+    - cron: '5 14 * * 1'     # 14:05 UTC = 08:05 MT (MDT) / 07:05 MST
   workflow_dispatch: {}
 
 permissions:
@@ -17,13 +16,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2) Set up Python
+      # 2) Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
 
-      # 3) Install deps
+      # 3) Deps
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -38,7 +37,7 @@ jobs:
         run: |
           python scripts/generate_brief.py
 
-      # 5) Update feed.xml enclosure to latest mp3
+      # 5) Update feed enclosure to latest mp3
       - name: Update feed.xml (point enclosure to latest mp3)
         run: |
           python scripts/update_feed.py
@@ -47,35 +46,23 @@ jobs:
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: weekly brief – audio + transcript + feed"
+          commit_message: "chore: weekly brief - audio + transcript + feed"
           file_pattern: |
             audio/*.mp3
             audio/*.txt
             feed.xml
 
-      # 7) Find latest transcript & build email meta
+      # 7) Discover latest files + build email meta
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
         run: |
           set -euo pipefail
-
           if ls -1 audio/*.txt >/dev/null 2>&1; then
             LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
             LATEST_MP3="${LATEST_TXT%.txt}.mp3"
-
-            # Extract yyyymmdd from filename tail (e.g., ai_news_20250914.txt -> 20250914)
             STAMP="${LATEST_TXT##*_}"; STAMP="${STAMP%.txt}"
-
-            # Nice date (e.g., Monday, Sep 15, 2025)
-            READABLE_DATE="$(python - <<'PY'
-import os, datetime
-s = os.environ['STAMP']
-d = datetime.datetime.strptime(s, "%Y%m%d")
-print(d.strftime("%A, %b %d, %Y"))
-PY
-)"
-
+            READABLE_DATE="$(python -c "import os,datetime; s=os.environ['STAMP']; d=datetime.datetime.strptime(s,'%Y%m%d'); print(d.strftime('%A, %b %d, %Y'))" )"
             {
               echo "found=true"
               echo "txt=$LATEST_TXT"
@@ -87,15 +74,17 @@ PY
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # 8) Read transcript into $GITHUB_ENV safely
+      # 8) Read transcript into env (robust delimiter)
       - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
         run: |
+          set -euo pipefail
+          DELIM="$(uuidgen | tr -d '-')"
           {
-            echo "TRANSCRIPT<<EOF"
+            echo "TRANSCRIPT<<$DELIM"
             cat "${{ steps.latest.outputs.txt }}"
-            echo "EOF"
+            echo "$DELIM"
           } >> "$GITHUB_ENV"
 
       # 9) Compute .docx path
@@ -105,7 +94,7 @@ PY
         shell: bash
         run: |
           set -euo pipefail
-          OUT="audio/${{ steps.latest.outputs.mp3file%.mp3 }}.docx"
+          OUT="audio/${{ steps.latest.outputs.mp3file %.mp3 }}.docx"
           echo "out=$OUT" >> "$GITHUB_OUTPUT"
 
       # 10) Build .docx transcript
@@ -116,8 +105,8 @@ PY
             --input "${{ steps.latest.outputs.txt }}" \
             --output "${{ steps.docx.outputs.out }}"
 
-      # 11) Email transcript
-      - name: Email transcript
+      # 11) Email transcript (.docx attached). Body text is read from file (no multi-line env in YAML).
+      - name: Email transcript (.docx attached, full body)
         if: steps.latest.outputs.found == 'true'
         env:
           SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
@@ -126,8 +115,8 @@ PY
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_FROM:    ${{ secrets.EMAIL_FROM }}
           EMAIL_TO:      ${{ secrets.EMAIL_TO }}
-          SUBJECT:       AI Executive Brief transcript – ${{ steps.latest.outputs.date_readable }}
-          BODY_TEXT:     ${{ env.TRANSCRIPT }}
+          SUBJECT:       AI Executive Brief transcript - ${{ steps.latest.outputs.date_readable }}
           ATTACH_PATH:   ${{ steps.docx.outputs.out }}
+          BODY_FILE:     ${{ steps.latest.outputs.txt }}
         run: |
           python scripts/send_email.py
