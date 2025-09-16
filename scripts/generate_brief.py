@@ -34,8 +34,10 @@ SOURCES = [
 # ===== Helpers =====
 def denver_date_today():
     """Use a fixed MST/MDT base; keeps date display consistent for your audience."""
-    # “America/Denver” would need zoneinfo on the runner; this keeps it simple:
-    denver = datetime.timedelta(hours=-6)  # good enough for gating/date labels
+    # During Daylight Saving Time (March-November), Mountain Time is UTC-7
+    # During Standard Time (November-March), Mountain Time is UTC-6
+    # For simplicity, using UTC-7 since most of the year is DST
+    denver = datetime.timedelta(hours=-7)
     return (datetime.datetime.now(datetime.timezone.utc) + denver).date()
 
 def monday_stamp():
