@@ -19,11 +19,28 @@ def rfc2822_now_gmt():
     now = datetime.datetime.utcnow()
     return now.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
+def denver_date_today():
+    """Get current date in Mountain Time"""
+    import pytz
+    mountain_tz = pytz.timezone('America/Denver')
+    now_mountain = datetime.datetime.now(mountain_tz)
+    return now_mountain.date()
+
 def load_stamp():
-    # Always process the newest MP3 file, regardless of date
+    """Find the MP3 file for today's date"""
+    today = denver_date_today()
+    today_stamp = today.strftime("%Y%m%d")
+    
+    # Look for today's file first
+    today_pattern = AUDIO_DIR / f"ai_news_{today_stamp}.mp3"
+    if today_pattern.exists():
+        print(f"Found today's MP3: {today_pattern.name} with stamp: {today_stamp}")
+        return today_stamp
+    
+    # Fallback: find the newest MP3 file
     mp3s = sorted(AUDIO_DIR.glob("ai_news_*.mp3"), key=os.path.getmtime, reverse=True)
     if mp3s:
-        name = mp3s[0].stem  # e.g. ai_news_20250915
+        name = mp3s[0].stem  # e.g. ai_news_20250916
         # Extract the 8-digit date from filename
         import re
         m = re.search(r"(\d{8})$", name)
