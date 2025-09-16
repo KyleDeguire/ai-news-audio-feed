@@ -20,25 +20,21 @@ def rfc2822_now_gmt():
     return now.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
 def load_stamp():
-    # Prefer explicit STAMP environment variable (format YYYYMMDD or similar)
-    s = os.environ.get("STAMP")
-    if s:
-        return s
-    
-    # Fallback: try to infer from newest audio filename like ai_news_YYYYMMDD.mp3
-    mp3s = sorted(AUDIO_DIR.glob("*.mp3"), key=os.path.getmtime, reverse=True)
+    # Always process the newest MP3 file, regardless of date
+    mp3s = sorted(AUDIO_DIR.glob("ai_news_*.mp3"), key=os.path.getmtime, reverse=True)
     if mp3s:
-        name = mp3s[0].stem  # e.g. ai_news_20250916
-        # grab trailing 8-digit part
+        name = mp3s[0].stem  # e.g. ai_news_20250915
+        # Extract the 8-digit date from filename
         import re
         m = re.search(r"(\d{8})$", name)
         if m:
+            print(f"Found newest MP3: {mp3s[0].name} with stamp: {m.group(1)}")
             return m.group(1)
     
+    print("No ai_news_*.mp3 files found")
     return None
 
 def nice_title_from_stamp(stamp):
-    # Try parse YYYYMMDD
     try:
         d = datetime.datetime.strptime(stamp, "%Y%m%d")
         return d.strftime("AI Executive Brief - %d %b, %Y")
@@ -53,19 +49,16 @@ def pretty_pubdate_from_stamp(stamp):
         return rfc2822_now_gmt()
 
 def find_latest_mp3_by_stamp(stamp):
-    # prefer filename containing stamp
     if stamp:
         candidates = list(AUDIO_DIR.glob(f"*{stamp}*.mp3"))
         if candidates:
-            # return the newest matching file
             return sorted(candidates, key=os.path.getmtime, reverse=True)[0]
     
-    # fallback: newest mp3
-    mp3s = sorted(AUDIO_DIR.glob("*.mp3"), key=os.path.getmtime, reverse=True)
+    # fallback: newest ai_news mp3
+    mp3s = sorted(AUDIO_DIR.glob("ai_news_*.mp3"), key=os.path.getmtime, reverse=True)
     return mp3s[0] if mp3s else None
 
 def register_namespaces():
-    # Use common prefixes to avoid ElementTree creating ns0, ns1, etc.
     ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
 
 def create_proper_feed():
@@ -107,12 +100,12 @@ def main():
     
     stamp = load_stamp()
     if not stamp:
-        print("ERROR: STAMP not found and no audio files to infer from.", file=sys.stderr)
+        print("ERROR: No audio files found to process.", file=sys.stderr)
         sys.exit(1)
     
     mp3_path = find_latest_mp3_by_stamp(stamp)
     if not mp3_path or not mp3_path.exists():
-        print("ERROR: No MP3 found for stamp:", stamp, file=sys.stderr)
+        print(f"ERROR: No MP3 found for stamp: {stamp}", file=sys.stderr)
         sys.exit(1)
     
     mp3_basename = mp3_path.name
@@ -122,28 +115,38 @@ def main():
     # guid derive (unique per new episode)
     guid_text = mp3_basename.replace(".mp3", "")
     
+    print(f"Processing: {mp3_basename} with GUID: {guid_text}")
+    
     # parse feed
     tree = ET.parse(FEED_PATH)
     root = tree.getroot()
     
-    # find channel (rss -> channel)
+    # find channel
     channel = root.find("channel")
     if channel is None:
         print("ERROR: feed.xml missing <channel>", file=sys.stderr)
         sys.exit(1)
     
     # check for existing guid (avoid duplicates)
-    existing_guids = { (item.find("guid").text if item.find("guid") is not None else "") for item in channel.findall("item") }
+    existing_guids = set()
+    for item in channel.findall("item"):
+        guid_elem = item.find("guid")
+        if guid_elem is not None and guid_elem.text:
+            existing_guids.add(guid_elem.text)
+    
+    print(f"Existing GUIDs in feed: {existing_guids}")
     
     if guid_text in existing_guids:
-        print(f"Episode for guid {guid_text} already in feed --- skipping append.")
-        # still update lastBuildDate to current time so feed consumers might see freshness
+        print(f"Episode for GUID {guid_text} already in feed --- skipping append.")
+        # still update lastBuildDate
         last = channel.find("lastBuildDate")
         if last is None:
             last = ET.SubElement(channel, "lastBuildDate")
         last.text = rfc2822_now_gmt()
         tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
         sys.exit(0)
+    
+    print(f"Adding new episode with GUID: {guid_text}")
     
     # Construct new item
     item = ET.Element("item")
@@ -173,17 +176,14 @@ def main():
     ET.SubElement(item, "itunes:explicit").text = "false"
     ET.SubElement(item, "itunes:episodeType").text = "full"
     
-    # Find the right place to insert item (after all channel metadata, before closing channel tag)
-    # Insert right before the first existing item, or append if no items exist
+    # Insert the new item at the top (newest first)
     first_item = channel.find("item")
     if first_item is not None:
-        # insert before first_item
         channel.insert(list(channel).index(first_item), item)
     else:
-        # append at end
         channel.append(item)
     
-    # update lastBuildDate to now
+    # update lastBuildDate
     last = channel.find("lastBuildDate")
     if last is None:
         last = ET.SubElement(channel, "lastBuildDate")
@@ -193,7 +193,7 @@ def main():
     ET.indent(tree, space="  ")
     tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
     
-    print("Appended new item to feed:", mp3_basename)
+    print(f"Successfully added new episode: {mp3_basename}")
     sys.exit(0)
 
 if __name__ == "__main__":
