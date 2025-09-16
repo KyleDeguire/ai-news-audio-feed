@@ -1,0 +1,29 @@
+name: Nudge feed (refresh latest pubDate)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run nudge script
+        run: |
+          python scripts/nudge_feed.py
+
+      - name: Commit & push feed.xml
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: nudge feed — bump latest item pubDate + channel lastBuildDate"
+          file_pattern: feed.xml
