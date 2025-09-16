@@ -19,39 +19,43 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: '3.x'
 
       - name: Install deps
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # ---------- Generate MP3 + transcript ----------
+      # ----- Generate audio + transcript -----
       - name: Generate MP3 + transcript
         env:
-          OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
+        shell: bash
         run: |
           set -euo pipefail
           python scripts/generate_brief.py
 
-      # ---------- Update feed.xml to latest mp3 ----------
+      # ----- Update feed.xml to point to latest mp3 -----
       - name: Update feed.xml (point enclosure to latest mp3)
+        shell: bash
         run: |
           set -euo pipefail
           python scripts/update_feed.py
 
+      # ----- Commit audio + feed -----
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: weekly brief – audio + transcript + feed"
+          commit_message: "chore: weekly brief — audio + transcript + feed"
           file_pattern: |
             audio/*.mp3
             audio/*.txt
             feed.xml
 
-      # ---------- Find latest transcript & build email meta ----------
+      # ----- Find latest transcript + build email meta -----
       - name: Find latest transcript & build email meta
         id: latest
         shell: bash
@@ -61,13 +65,19 @@ jobs:
             LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
             LATEST_MP3="${LATEST_TXT%.txt}.mp3"
 
-            # Extract yyyymmdd at the end of the filename (ai_news_YYYYMMDD.txt)
+            # Extract yyyymmdd tail from filename: ai_news_YYYYMMDD.txt
             STAMP="$(basename "$LATEST_TXT")"
             STAMP="${STAMP##*_}"
             STAMP="${STAMP%.txt}"
+            export STAMP   # <<< KEY FIX: make STAMP visible to Python
 
-            READABLE_DATE="$(python -c "import os,datetime; s=os.getenv('STAMP'); d=datetime.datetime.strptime(s,'%Y%m%d'); print(d.strftime('%A, %b %d, %Y'))" )"
-
+            READABLE_DATE="$(python - <<'PY'
+import os, datetime
+s = os.getenv("STAMP")
+d = datetime.datetime.strptime(s, "%Y%m%d")
+print(d.strftime("%A, %b %d, %Y"))
+PY
+)"
             {
               echo "txt=$LATEST_TXT"
               echo "mp3=$(basename "$LATEST_MP3")"
@@ -79,60 +89,61 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ---------- Read transcript into $GITHUB_ENV safely ----------
+      # ----- Read transcript into $GITHUB_ENV safely (no fragile delimiters) -----
       - name: Read transcript into env
         if: steps.latest.outputs.found == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          DELIM="$(python -c 'import uuid; print(uuid.uuid4())')"
+          DELIM="$(python - <<'PY'
+import uuid
+print(uuid.uuid4().hex)
+PY
+)"
           {
             echo "TRANSCRIPT<<$DELIM"
             cat "${{ steps.latest.outputs.txt }}"
             echo "$DELIM"
           } >> "$GITHUB_ENV"
 
-      # ---------- Compute .docx path ----------
+      # ----- Compute .docx output path (used by make_docx.py) -----
       - name: Compute .docx path
         if: steps.latest.outputs.found == 'true'
         id: docx
         shell: bash
         run: |
           set -euo pipefail
-          base="${{ steps.latest.outputs.txt }}"
-          out="${base%.txt}.docx"
-          echo "out=$out" >> "$GITHUB_OUTPUT"
+          OUT="transcript_${{ steps.latest.outputs.stamp }}.docx"
+          echo "path=$OUT" >> "$GITHUB_OUTPUT"
 
-      # ---------- Build .docx transcript ----------
+      # ----- Build .docx transcript (clickable links + footnotes) -----
       - name: Build .docx transcript
         if: steps.latest.outputs.found == 'true'
+        shell: bash
         run: |
           set -euo pipefail
+          # If your script expects --input/--output flags, keep them:
           python scripts/make_docx.py \
-            --in "${{ steps.latest.outputs.txt }}" \
-            --out "${{ steps.docx.outputs.out }}"
+            --input "${{ steps.latest.outputs.txt }}" \
+            --output "${{ steps.docx.outputs.path }}"
 
-      # ---------- Email transcript (.docx attached, full body) ----------
+      # ----- Email transcript (.docx attached, full body w/ links) -----
       - name: Email transcript
         if: steps.latest.outputs.found == 'true'
         env:
-          SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT:     ${{ secrets.SMTP_PORT }}   # e.g., 465 for Gmail SSL
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          EMAIL_FROM:    ${{ secrets.EMAIL_FROM }}
-          EMAIL_TO:      ${{ secrets.EMAIL_TO }}
-          SUBJECT: "AI Executive Brief transcript – ${{ steps.latest.outputs.date_readable }}"
+          SMTP_SERVER:     ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT:       ${{ secrets.SMTP_PORT }}   # e.g. 465 for SSL (Gmail), or 587 for STARTTLS
+          SMTP_USERNAME:   ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD:   ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM:      ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO:        ${{ secrets.EMAIL_TO }}
+          SUBJECT:         AI Executive Brief transcript – ${{ steps.latest.outputs.date_readable }}
+          ATTACH_PATH:     ${{ steps.docx.outputs.path }}
+          # body comes from TRANSCRIPT we stashed in $GITHUB_ENV
+          BODY:            ${{ env.TRANSCRIPT }}
+        shell: bash
         run: |
           set -euo pipefail
-          BODY=$'Here is the transcript (links clickable) and the .docx attached.\n\n'"$TRANSCRIPT"
-          python scripts/send_email.py \
-            --server "$SMTP_SERVER" \
-            --port "$SMTP_PORT" \
-            --user "$SMTP_USERNAME" \
-            --password "$SMTP_PASSWORD" \
-            --from "$EMAIL_FROM" \
-            --to "$EMAIL_TO" \
-            --subject "$SUBJECT" \
-            --body "$BODY" \
-            --attach "${{ steps.docx.outputs.out }}"
+          python scripts/send_email.py
+
+      # (Optional) anything else you keep after this point
