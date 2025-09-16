@@ -2,7 +2,8 @@ name: Weekly AI Executive Brief
 
 on:
   schedule:
-    - cron: '5 14 * * 1'    # Mondays 14:05 UTC = 08:05 MT (MDT) / 07:05 MST
+    # 14:05 UTC = 08:05 MT during DST (MDT), 07:05 MST otherwise
+    - cron: '5 14 * * 1'
   workflow_dispatch: {}
 
 permissions:
@@ -12,118 +13,143 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1) Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2) Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: "3.x"
 
-      # 3) Install deps
       - name: Install deps
-        shell: bash
         run: |
-          set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # 4) Generate MP3 + transcript (creates audio/ai_news_YYYYMMDD.{mp3,txt})
+      # -------- Generate MP3 + transcript ----------
       - name: Generate MP3 + transcript
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
-        shell: bash
         run: |
           set -euo pipefail
           python scripts/generate_brief.py
 
-      # 5) Find latest transcript & build meta (NO heredocs, NO multi-line env writes)
-      - name: Find latest transcript & build meta
-        id: latest
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! ls -1 audio/*.txt >/dev/null 2>&1; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
-          LATEST_MP3="${LATEST_TXT%.txt}.mp3"
-          BASE="$(basename "$LATEST_TXT" .txt)"   # ai_news_20250915
-          STAMP="${BASE##*_}"                     # 20250915
-          if ! [[ "$STAMP" =~ ^[0-9]{8}$ ]]; then
-            echo "Could not parse YYYYMMDD from '$BASE' (got '$STAMP')" >&2
-            exit 1
-          fi
-          READABLE_DATE="$(python -c "import datetime as d; print(d.datetime.strptime('${STAMP}','%Y%m%d').strftime('%A, %b %d, %Y'))")"
-          {
-            echo "found=true"
-            echo "txt=$LATEST_TXT"
-            echo "mp3file=$(basename "$LATEST_MP3")"
-            echo "stamp=$STAMP"
-            echo "date_readable=$READABLE_DATE"
-          } >> "$GITHUB_OUTPUT"
-
-      # 6) Update feed: append NEW <item> each run (your update_feed.py handles history)
-      - name: Update feed.xml (append latest episode)
-        if: steps.latest.outputs.found == 'true'
+      # -------- Update feed.xml to latest mp3 ----------
+      - name: Update feed.xml (point enclosure to latest mp3)
         env:
-          MP3_BASENAME: ${{ steps.latest.outputs.mp3file }}
-          STAMP:        ${{ steps.latest.outputs.stamp }}
-        shell: bash
+          MP3_BASENAME: ${{ env.MP3_BASENAME }}
+          STAMP:        ${{ env.STAMP }}
         run: |
           set -euo pipefail
           python scripts/update_feed.py
 
-      # 7) Commit audio + transcript + feed (triggers Pages deploy)
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: weekly brief - audio + transcript + feed"
+          commit_message: "chore: weekly brief – audio + transcript + feed"
           file_pattern: |
             audio/*.mp3
             audio/*.txt
             feed.xml
 
-      # 8) Compute .docx path (bash only; avoids invalid GitHub expressions)
+      # -------- Find latest transcript & build email meta ----------
+      - name: Find latest transcript & build email meta
+        id: latest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ls -1 audio/*.txt >/dev/null 2>&1; then
+            LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
+            LATEST_MP3="${LATEST_TXT%.txt}.mp3"
+
+            # Extract yyyymmdd from filename suffix: ai_news_YYYYMMDD.txt
+            STAMP="$(basename "$LATEST_TXT")"
+            STAMP="${STAMP##*_}"
+            STAMP="${STAMP%.txt}"
+
+            # Make a readable date with Python (portable)
+            READABLE_DATE="$(python - <<'PY'
+import os, datetime
+s = os.environ['STAMP']
+d = datetime.datetime.strptime(s, "%Y%m%d")
+print(d.strftime("%A, %b %d, %Y"))
+PY
+)"
+            {
+              echo "txt=$LATEST_TXT"
+              echo "mp3=$(basename "$LATEST_MP3")"
+              echo "stamp=$STAMP"
+              echo "date_readable=$READABLE_DATE"
+              echo "found=true"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # -------- Read transcript into $GITHUB_ENV safely ----------
+      - name: Read transcript into env
+        if: steps.latest.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Generate a safe, unique delimiter in Python (avoids 'matching delimiter not found')
+          DELIM="$(python - <<'PY'
+import uuid; print(str(uuid.uuid4()))
+PY
+)"
+          {
+            echo "TRANSCRIPT<<$DELIM"
+            cat "${{ steps.latest.outputs.txt }}"
+            echo "$DELIM"
+          } >> "$GITHUB_ENV"
+
+      # -------- Compute .docx path ----------
       - name: Compute .docx path
         if: steps.latest.outputs.found == 'true'
         id: docx
         shell: bash
         run: |
           set -euo pipefail
-          base="${{ steps.latest.outputs.mp3file }}"
-          base="${base%.mp3}.docx"
-          echo "out=audio/$base" >> "$GITHUB_OUTPUT"
+          base="${{ steps.latest.outputs.txt }}"
+          out="${base%.txt}.docx"
+          echo "out=$out" >> "$GITHUB_OUTPUT"
 
-      # 9) Build .docx transcript (keeps links clickable)
+      # -------- Build .docx transcript ----------
       - name: Build .docx transcript
         if: steps.latest.outputs.found == 'true'
-        shell: bash
         run: |
           set -euo pipefail
           python scripts/make_docx.py \
-            --input "${{ steps.latest.outputs.txt }}" \
-            --output "${{ steps.docx.outputs.out }}"
+            --in "${{ steps.latest.outputs.txt }}" \
+            --out "${{ steps.docx.outputs.out }}"
 
-      # 10) Email transcript (.docx attached, body read from .txt)
-      - name: Email transcript (.docx attached, full body)
+      # -------- Email transcript (.docx attached, full body) ----------
+      - name: Email transcript
         if: steps.latest.outputs.found == 'true'
         env:
           SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT:     ${{ secrets.SMTP_PORT }}   # 465 for SSL, 587 for STARTTLS
+          SMTP_PORT:     ${{ secrets.SMTP_PORT }}   # e.g., 465 for Gmail SSL
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_FROM:    ${{ secrets.EMAIL_FROM }}
           EMAIL_TO:      ${{ secrets.EMAIL_TO }}
-          SUBJECT:       AI Executive Brief transcript - ${{ steps.latest.outputs.date_readable }}
-          BODY_FILE:     ${{ steps.latest.outputs.txt }}
-          ATTACH_PATH:   ${{ steps.docx.outputs.out }}
-        shell: bash
+          SUBJECT: "AI Executive Brief transcript – ${{ steps.latest.outputs.date_readable }}"
+          BODY: |
+            Here is the transcript (links clickable) and the .docx attached.
+
+            $TRANSCRIPT
         run: |
           set -euo pipefail
-          python scripts/send_email.py
+          python scripts/send_email.py \
+            --server "$SMTP_SERVER" \
+            --port "$SMTP_PORT" \
+            --user "$SMTP_USERNAME" \
+            --password "$SMTP_PASSWORD" \
+            --from "$EMAIL_FROM" \
+            --to "$EMAIL_TO" \
+            --subject "$SUBJECT" \
+            --body "$BODY" \
+            --attach "${{ steps.docx.outputs.out }}"
