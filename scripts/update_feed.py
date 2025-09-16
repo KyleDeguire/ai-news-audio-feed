@@ -1,135 +1,102 @@
-#!/usr/bin/env python3
-"""
-Update feed.xml by PREPENDING a new <item> for the latest MP3.
-Keeps older items intact so podcast apps see a brand-new GUID each week.
+# scripts/update_feed.py
+# Update feed.xml's enclosure to the latest MP3 and refresh dates.
 
-Inputs (from env, all plain strings):
-  FEED_PATH        => path to feed.xml (e.g., "feed.xml")
-  AUDIO_DIR        => relative dir where MP3 lives (e.g., "audio")
-  MP3_BASENAME     => filename only (e.g., "ai_news_20250916.mp3")
-  STAMP            => episode id fragment (e.g., "20250916")
-  READABLE_DATE    => e.g., "Mon, Sep 16, 2025"
-  EPISODE_TITLE    => short headline/title (optional; will be prefixed by date)
-  SITE_LINK        => site root link already in <channel><link> (optional override)
-"""
-
+from __future__ import annotations
 import os
-import time
-import email.utils as eut
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 import xml.etree.ElementTree as ET
 
-def findfirst(parent, name):
-    for el in parent:
-        if el.tag.endswith(name):
-            return el
-    return None
+REPO_BASE_URL = "https://kyledeguire.github.io/ai-news-audio-feed"
+AUDIO_DIR = Path("audio")
+FEED_PATH = Path("feed.xml")
 
-def findall(parent, name):
-    return [el for el in parent if el.tag.endswith(name)]
+def rfc2822(dt: datetime) -> str:
+    # RFC 2822 format in GMT (UTC)
+    # Example: Tue, 16 Sep 2025 00:24:56 GMT
+    return dt.astimezone(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
 
-def text(el):
-    return "" if el is None or el.text is None else el.text
-
-def main():
-    feed_path     = os.getenv("FEED_PATH", "feed.xml")
-    audio_dir     = os.getenv("AUDIO_DIR", "audio")
-    mp3_basename  = os.getenv("MP3_BASENAME", "").strip()
-    stamp         = os.getenv("STAMP", "").strip()
-    readable_date = os.getenv("READABLE_DATE", "").strip()
-    headline      = os.getenv("EPISODE_TITLE", "").strip()
-    site_link_ovr = os.getenv("SITE_LINK", "").strip()
+def main() -> int:
+    mp3_basename = os.environ.get("MP3_BASENAME", "").strip()
+    stamp = os.environ.get("STAMP", "").strip()
 
     if not mp3_basename or not stamp:
-        raise SystemExit("MP3_BASENAME and STAMP must be set.")
+        print("MP3_BASENAME and STAMP must be set in env.", file=sys.stderr)
+        return 1
 
-    # Load feed
-    tree = ET.parse(feed_path)
+    mp3_path = AUDIO_DIR / mp3_basename
+    if not mp3_path.exists():
+        print(f"MP3 not found at {mp3_path}", file=sys.stderr)
+        return 1
+
+    # Calculate file size for <enclosure length="...">
+    length_bytes = mp3_path.stat().st_size
+
+    # Parse the feed (do NOT register any reserved prefixes)
+    tree = ET.parse(FEED_PATH)
     root = tree.getroot()
 
-    # <channel>
-    channel = findfirst(root, "channel")
+    # Helper: find first child by tag under <channel>
+    channel = root.find("channel")
     if channel is None:
-        raise SystemExit("feed.xml has no <channel>")
+        print("No <channel> in feed.xml", file=sys.stderr)
+        return 1
 
-    # Derive base URL from <channel><link> unless overridden
-    ch_link_el = findfirst(channel, "link")
-    base_url = site_link_ovr or (text(ch_link_el).rstrip("/") + "/")
-    if not base_url.endswith("/"):
-        base_url += "/"
+    # Update/ensure there is at least one <item>
+    item = channel.find("item")
+    if item is None:
+        item = ET.SubElement(channel, "item")
 
-    # Build absolute MP3 URL and file size
-    enclosure_url = f"{base_url}{audio_dir}/{mp3_basename}"
-    mp3_path = os.path.join(audio_dir, mp3_basename)
-    length = "0"
+    # --- enclosure ---------------------------------------------------------
+    enclosure = item.find("enclosure")
+    if enclosure is None:
+        enclosure = ET.SubElement(item, "enclosure")
+
+    enclosure.set("url", f"{REPO_BASE_URL}/audio/{mp3_basename}")
+    enclosure.set("length", str(length_bytes))
+    enclosure.set("type", "audio/mpeg")
+
+    # --- pubDate from STAMP (YYYYMMDD) ------------------------------------
     try:
-        length = str(os.path.getsize(mp3_path))
-    except Exception:
-        # If length can’t be stat’d, leave 0 – still valid for most podcatchers
-        pass
+        dt_pub = datetime.strptime(stamp, "%Y%m%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        print(f"Invalid STAMP (expected YYYYMMDD): {stamp}", file=sys.stderr)
+        return 1
 
-    # Publish date: RFC 2822 in GMT
-    pubdate = eut.formatdate(usegmt=True)
+    pub = item.find("pubDate")
+    if pub is None:
+        pub = ET.SubElement(item, "pubDate")
+    pub.text = rfc2822(dt_pub)
 
-    # Title & description
-    # Example final title: "AI Executive Brief – 16 Sep, 2025"
-    # If you pass EPISODE_TITLE, it’s used as the description’s lead.
-    title_text = f"AI Executive Brief – {readable_date or stamp}"
-    desc_lead  = headline or "Executive Briefing"
-    description_text = f"{desc_lead}: AI Market Trends and Strategic Insights"
+    # Ensure there is a stable <guid> (derived from stamp)
+    guid = item.find("guid")
+    if guid is None:
+        guid = ET.SubElement(item, "guid")
+    guid.text = f"ai_news_{stamp}"
 
-    # GUID for this episode
-    guid_value = f"ai_news_{stamp}"
+    # Optional: episodeType (keep stable)
+    ep_type = item.find("{http://www.itunes.com/dtds/podcast-1.0.dtd}episodeType")
+    if ep_type is None:
+        # If an itunes:episodeType element already exists with another prefix, leave it.
+        # Otherwise add a plain episodeType without explicit prefix (ElementTree may map it).
+        ep_type = item.find("episodeType")
+        if ep_type is None:
+            ep_type = ET.SubElement(item, "episodeType")
+    if not ep_type.text:
+        ep_type.text = "full"
 
-    # If an item with this guid already exists, drop it first (idempotent)
-    for existing in reversed(findall(channel, "item")):
-        g = findfirst(existing, "guid")
-        if g is not None and text(g) == guid_value:
-            channel.remove(existing)
+    # --- channel.lastBuildDate --------------------------------------------
+    last_build = channel.find("lastBuildDate")
+    if last_build is None:
+        last_build = ET.SubElement(channel, "lastBuildDate")
+    last_build.text = rfc2822(datetime.now(timezone.utc))
 
-    # Create new <item>
-    item = ET.Element("item")
-
-    el_title = ET.SubElement(item, "title")
-    el_title.text = title_text
-
-    el_desc = ET.SubElement(item, "description")
-    el_desc.text = description_text
-
-    el_link = ET.SubElement(item, "link")
-    el_link.text = text(ch_link_el) or base_url
-
-    el_guid = ET.SubElement(item, "guid")
-    el_guid.text = guid_value
-
-    el_pub = ET.SubElement(item, "pubDate")
-    el_pub.text = pubdate
-
-    el_encl = ET.SubElement(item, "enclosure")
-    el_encl.set("url", enclosure_url)
-    el_encl.set("type", "audio/mpeg")
-    el_encl.set("length", length)
-
-    # Insert as the FIRST <item> (so new episodes appear at top)
-    children = list(channel)
-    first_item_idx = None
-    for idx, el in enumerate(children):
-        if el.tag.endswith("item"):
-            first_item_idx = idx
-            break
-
-    if first_item_idx is None:
-        channel.append(item)
-    else:
-        channel.insert(first_item_idx, item)
-
-    # Update <lastBuildDate>
-    lbd = findfirst(channel, "lastBuildDate")
-    if lbd is None:
-        lbd = ET.SubElement(channel, "lastBuildDate")
-    lbd.text = eut.formatdate(usegmt=True)
-
-    # Write out without altering namespaces/prefixes
-    tree.write(feed_path, encoding="utf-8", xml_declaration=True)
+    # Write file back. Avoid changing prefixes unnecessarily.
+    # ElementTree may still emit ns0 for unknown namespaces already present in feed.xml; that’s fine.
+    tree.write(FEED_PATH, encoding="utf-8", xml_declaration=True)
+    print(f"feed.xml updated → enclosure={enclosure.get('url')}, length={length_bytes}, pubDate={pub.text}")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
