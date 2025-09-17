@@ -1,11 +1,14 @@
 <?xml version='1.0' encoding='utf-8'?>
-<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" version="2.0">
+<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
   <channel>
     <title>AI News Weekly -- Executive Briefing</title>
     <description>Weekly AI news analysis and strategic insights for business leaders</description>
     <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
+    <atom:link href="https://kyledeguire.github.io/ai-news-audio-feed/feed.xml" rel="self" type="application/rss+xml"/>
     <language>en-us</language>
-    <lastBuildDate>Tue, 16 Sep 2025 18:30:00 GMT</lastBuildDate>
+    <lastBuildDate>Tue, 16 Sep 2025 18:10:00 GMT</lastBuildDate>
+    <managingEditor>kyledeguire@example.com (Kyle Deguire)</managingEditor>
+    <itunes:author>Kyle Deguire</itunes:author>
     <itunes:image href="https://kyledeguire.github.io/ai-news-audio-feed/artwork/cover.jpg" />
     <itunes:category text="News">
       <itunes:category text="Tech News" />
@@ -16,7 +19,7 @@
       <description>Executive Briefing: AI Market Trends and Strategic Insights</description>
       <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
       <enclosure url="https://kyledeguire.github.io/ai-news-audio-feed/audio/ai_news_20250916.mp3" length="3700000" type="audio/mpeg" />
-      <pubDate>Mon, 16 Sep 2025 18:30:00 GMT</pubDate>
+      <pubDate>Mon, 16 Sep 2025 18:10:00 GMT</pubDate>
       <guid isPermaLink="false">ai_news_20250916</guid>
       <itunes:explicit>false</itunes:explicit>
       <itunes:episodeType>full</itunes:episodeType>
