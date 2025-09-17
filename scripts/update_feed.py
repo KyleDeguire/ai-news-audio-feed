@@ -78,38 +78,18 @@ def find_latest_mp3_by_stamp(stamp):
 def register_namespaces():
     ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
 
-def create_proper_feed():
-    """Create a properly structured RSS feed"""
-    rss = ET.Element("rss", {"version": "2.0"})
-    rss.set("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
-    
-    channel = ET.SubElement(rss, "channel")
-    
-    # Channel metadata (must come first)
-    ET.SubElement(channel, "title").text = "AI News Weekly -- Executive Briefing"
-    ET.SubElement(channel, "description").text = "Weekly AI news analysis and strategic insights for business leaders"
-    ET.SubElement(channel, "link").text = f"{BASE_URL}/"
-    ET.SubElement(channel, "language").text = "en-us"
-    ET.SubElement(channel, "lastBuildDate").text = rfc2822_now_gmt()
-    
-    # iTunes specific tags
-    itunes_image = ET.SubElement(channel, "itunes:image")
-    itunes_image.set("href", f"{BASE_URL}/artwork/cover.jpg")
-    
-    itunes_category = ET.SubElement(channel, "itunes:category")
-    itunes_category.set("text", "News")
-    itunes_sub_category = ET.SubElement(itunes_category, "itunes:category")
-    itunes_sub_category.set("text", "Tech News")
-    
-    ET.SubElement(channel, "itunes:explicit").text = "false"
-    
-    tree = ET.ElementTree(rss)
-    tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
-    return tree
-
 def ensure_feed_exists():
     if not FEED_PATH.exists():
-        create_proper_feed()
+        # Create minimal feed if none exists
+        rss = ET.Element("rss", {"version": "2.0"})
+        rss.set("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
+        channel = ET.SubElement(rss, "channel")
+        ET.SubElement(channel, "title").text = "AI News Weekly -- Executive Briefing"
+        ET.SubElement(channel, "description").text = "Weekly AI news analysis and strategic insights for business leaders"
+        ET.SubElement(channel, "link").text = f"{BASE_URL}/"
+        ET.SubElement(channel, "language").text = "en-us"
+        tree = ET.ElementTree(rss)
+        tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
 
 def main():
     register_namespaces()
@@ -125,14 +105,25 @@ def main():
         print(f"ERROR: No MP3 found for stamp: {stamp}", file=sys.stderr)
         sys.exit(1)
     
+    # CRITICAL: Get the actual file size with error handling
+    try:
+        actual_file_size = mp3_path.stat().st_size
+        print(f"File {mp3_path.name} has size: {actual_file_size} bytes")
+        if actual_file_size == 0:
+            print(f"ERROR: File {mp3_path.name} is empty (0 bytes)", file=sys.stderr)
+            sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: Cannot get file size for {mp3_path.name}: {e}", file=sys.stderr)
+        sys.exit(1)
+    
     mp3_basename = mp3_path.name
     mp3_url = f"{BASE_URL}/audio/{mp3_basename}"
-    mp3_size = str(mp3_path.stat().st_size)
+    mp3_size = str(actual_file_size)  # Use the actual measured size
     
     # guid derive (unique per new episode)
     guid_text = mp3_basename.replace(".mp3", "")
     
-    print(f"Processing: {mp3_basename} with GUID: {guid_text}")
+    print(f"Processing: {mp3_basename} with GUID: {guid_text}, Size: {mp3_size} bytes")
     
     # parse feed
     tree = ET.parse(FEED_PATH)
@@ -179,7 +170,7 @@ def main():
     
     enclosure = ET.SubElement(item, "enclosure")
     enclosure.set("url", mp3_url)
-    enclosure.set("length", mp3_size)
+    enclosure.set("length", mp3_size)  # This will now be correct
     enclosure.set("type", "audio/mpeg")
     
     pubDate = ET.SubElement(item, "pubDate")
@@ -210,7 +201,7 @@ def main():
     ET.indent(tree, space="  ")
     tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
     
-    print(f"Successfully added new episode: {mp3_basename}")
+    print(f"Successfully added new episode: {mp3_basename} ({mp3_size} bytes)")
     sys.exit(0)
 
 if __name__ == "__main__":
