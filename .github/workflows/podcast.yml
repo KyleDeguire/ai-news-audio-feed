@@ -2,7 +2,7 @@ name: Weekly AI Executive Brief
 
 on:
   schedule:
-    - cron: '0 15 * * 4'  # 8 AM Mountain Time (MDT = UTC-6, MST = UTC-7)
+    - cron: '0 15 * * 4' # 8 AM Mountain Time on Thursdays (MDT = UTC-6, MST = UTC-7)
   workflow_dispatch: {}
 
 permissions:
@@ -11,6 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,10 +51,8 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: weekly brief --- audio + transcript + feed"
-          file_pattern: |
-            audio/*.mp3
-            audio/*.txt
-            feed.xml
+          file_pattern: "audio/*.mp3 audio/*.txt feed.xml"
+          add_options: '--force'
 
       # --- Find latest transcript + meta (no heredocs) ---
       - name: Find latest transcript & build email meta
@@ -64,11 +63,14 @@ jobs:
           if ls -1 audio/*.txt >/dev/null 2>&1; then
             LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
             LATEST_MP3="${LATEST_TXT%.txt}.mp3"
+
             # Extract yyyymmdd from filename tail ai_news_YYYYMMDD.txt
             STAMP="$(basename "$LATEST_TXT")"
             STAMP="${STAMP##*_}"; STAMP="${STAMP%.txt}"
             export STAMP
+
             READABLE_DATE="$(python -c "import os,datetime as d; s=os.getenv('STAMP'); print(d.datetime.strptime(s,'%Y%m%d').strftime('%A, %b %d, %Y'))")"
+
             {
               echo "txt=$LATEST_TXT"
               echo "mp3=$(basename "$LATEST_MP3")"
