@@ -1,58 +1,261 @@
-<?xml version='1.0' encoding='utf-8'?>
-<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:podcast="https://podcastindex.org/namespace/1.0" version="2.0">
-  <channel>
-    <title>AI News Weekly -- Executive Briefing</title>
-    <description>Weekly AI news analysis and strategic insights for business leaders</description>
-    <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
-    <atom:link href="https://kyledeguire.github.io/ai-news-audio-feed/feed.xml" rel="self" type="application/rss+xml"/>
-    <language>en-us</language>
-    <lastBuildDate>Mon, 22 Sep 2025 15:00:00 GMT</lastBuildDate>
-    <managingEditor>kyledeguire@example.com (Kyle Deguire)</managingEditor>
-    <itunes:author>Kyle Deguire</itunes:author>
-    <itunes:image href="https://kyledeguire.github.io/ai-news-audio-feed/artwork/cover.jpg" />
-    <itunes:category text="News">
-      <itunes:category text="Tech News" />
-    </itunes:category>
-    <itunes:explicit>false</itunes:explicit>
-    <item>
-      <title>AI Executive Brief - 22 Sep, 2025</title>
-      <description>Executive Briefing: AI Market Trends and Strategic Insights</description>
-      <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
-      <enclosure url="https://kyledeguire.github.io/ai-news-audio-feed/audio/ai_news_20250922.mp3" length="3394291" type="audio/mpeg" />
-      <pubDate>Mon, 22 Sep 2025 15:00:00 GMT</pubDate>
-      <guid isPermaLink="false">ai_news_20250922</guid>
-      <itunes:explicit>false</itunes:explicit>
-      <itunes:episodeType>full</itunes:episodeType>
-    </item>
-    <item>
-      <title>AI Executive Brief - 17 Sep, 2025</title>
-      <description>Executive Briefing: AI Market Trends and Strategic Insights</description>
-      <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
-      <enclosure url="https://kyledeguire.github.io/ai-news-audio-feed/audio/ai_news_20250917.mp3" length="4105240" type="audio/mpeg" />
-      <pubDate>Tue, 17 Sep 2025 18:10:00 GMT</pubDate>
-      <guid isPermaLink="false">ai_news_20250917</guid>
-      <itunes:explicit>false</itunes:explicit>
-      <itunes:episodeType>full</itunes:episodeType>
-    </item>
-    <item>
-      <title>AI Executive Brief - 16 Sep, 2025</title>
-      <description>Executive Briefing: AI Market Trends and Strategic Insights</description>
-      <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
-      <enclosure url="https://kyledeguire.github.io/ai-news-audio-feed/audio/ai_news_20250916.mp3" length="3700000" type="audio/mpeg" />
-      <pubDate>Mon, 16 Sep 2025 18:10:00 GMT</pubDate>
-      <guid isPermaLink="false">ai_news_20250916</guid>
-      <itunes:explicit>false</itunes:explicit>
-      <itunes:episodeType>full</itunes:episodeType>
-    </item>
-    <item>
-      <title>AI Executive Brief - 14 Sep, 2025</title>
-      <description>Executive Briefing: AI Market Trends and Strategic Insights</description>
-      <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
-      <enclosure url="https://kyledeguire.github.io/ai-news-audio-feed/audio/ai_news_20250914.mp3" length="3718627" type="audio/mpeg" />
-      <pubDate>Sat, 14 Sep 2025 00:24:56 GMT</pubDate>
-      <guid isPermaLink="false">ai_news_20250914</guid>
-      <itunes:explicit>false</itunes:explicit>
-      <itunes:episodeType>full</itunes:episodeType>
-    </item>
-  </channel>
-</rss>
+#!/usr/bin/env python3
+# scripts/update_feed.py
+# Appends a new <item> to feed.xml for the latest MP3 (idempotent: will not duplicate an existing guid)
+
+import os
+import sys
+import glob
+import time
+import datetime
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+# CONFIG: adjust only if you host the feed at a different base URL
+BASE_URL = os.environ.get("PAGE_BASE_URL", "https://kyledeguire.github.io/ai-news-audio-feed")
+FEED_PATH = Path("feed.xml")
+AUDIO_DIR = Path("audio")
+
+def rfc2822_now_gmt():
+    now = datetime.datetime.utcnow()
+    return now.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+def denver_date_today():
+    """Get current date in Mountain Time"""
+    import pytz
+    mountain_tz = pytz.timezone('America/Denver')
+    now_mountain = datetime.datetime.now(mountain_tz)
+    print(f"DEBUG: Current Mountain Time: {now_mountain}")
+    return now_mountain.date()
+
+def load_stamp():
+    """Find the MP3 file for today's date"""
+    today = denver_date_today()
+    today_stamp = today.strftime("%Y%m%d")
+    print(f"DEBUG: Looking for stamp: {today_stamp}")
+    
+    # Look for today's file first
+    today_pattern = AUDIO_DIR / f"ai_news_{today_stamp}.mp3"
+    print(f"DEBUG: Checking for file: {today_pattern}")
+    if today_pattern.exists():
+        print(f"DEBUG: Found today's MP3: {today_pattern.name} with stamp: {today_stamp}")
+        return today_stamp
+    
+    # Fallback: find the newest MP3 file
+    mp3s = sorted(AUDIO_DIR.glob("ai_news_*.mp3"), key=os.path.getmtime, reverse=True)
+    print(f"DEBUG: Found {len(mp3s)} total MP3 files: {[mp3.name for mp3 in mp3s]}")
+    if mp3s:
+        name = mp3s[0].stem  # e.g. ai_news_20250926
+        print(f"DEBUG: Newest MP3 file: {mp3s[0].name}")
+        # Extract the 8-digit date from filename
+        import re
+        m = re.search(r"(\d{8})$", name)
+        if m:
+            print(f"DEBUG: Extracted stamp from newest file: {m.group(1)}")
+            return m.group(1)
+    
+    print("DEBUG: No ai_news_*.mp3 files found")
+    return None
+
+def nice_title_from_stamp(stamp):
+    try:
+        d = datetime.datetime.strptime(stamp, "%Y%m%d")
+        title = d.strftime("AI Executive Brief - %d %b, %Y")
+        print(f"DEBUG: Generated title: {title}")
+        return title
+    except Exception as e:
+        print(f"DEBUG: Error generating title: {e}")
+        return f"AI Executive Brief - {stamp}"
+
+def pretty_pubdate_from_stamp(stamp):
+    try:
+        d = datetime.datetime.strptime(stamp, "%Y%m%d")
+        pubdate = d.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        print(f"DEBUG: Generated pubDate: {pubdate}")
+        return pubdate
+    except Exception as e:
+        print(f"DEBUG: Error generating pubDate: {e}")
+        return rfc2822_now_gmt()
+
+def find_latest_mp3_by_stamp(stamp):
+    print(f"DEBUG: Finding MP3 file for stamp: {stamp}")
+    if stamp:
+        candidates = list(AUDIO_DIR.glob(f"*{stamp}*.mp3"))
+        print(f"DEBUG: Found {len(candidates)} candidates: {[c.name for c in candidates]}")
+        if candidates:
+            result = sorted(candidates, key=os.path.getmtime, reverse=True)[0]
+            print(f"DEBUG: Selected MP3: {result}")
+            return result
+    
+    # fallback: newest ai_news mp3
+    mp3s = sorted(AUDIO_DIR.glob("ai_news_*.mp3"), key=os.path.getmtime, reverse=True)
+    if mp3s:
+        print(f"DEBUG: Fallback to newest MP3: {mp3s[0]}")
+        return mp3s[0]
+    
+    print("DEBUG: No MP3 files found")
+    return None
+
+def register_namespaces():
+    ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
+
+def ensure_feed_exists():
+    print(f"DEBUG: Checking if feed exists: {FEED_PATH}")
+    if not FEED_PATH.exists():
+        print("DEBUG: Feed doesn't exist, creating minimal feed")
+        # Create minimal feed if none exists
+        rss = ET.Element("rss", {"version": "2.0"})
+        rss.set("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
+        channel = ET.SubElement(rss, "channel")
+        ET.SubElement(channel, "title").text = "AI News Weekly -- Executive Briefing"
+        ET.SubElement(channel, "description").text = "Weekly AI news analysis and strategic insights for business leaders"
+        ET.SubElement(channel, "link").text = f"{BASE_URL}/"
+        ET.SubElement(channel, "language").text = "en-us"
+        tree = ET.ElementTree(rss)
+        tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
+        print("DEBUG: Created new feed")
+    else:
+        print("DEBUG: Feed exists")
+
+def main():
+    print("DEBUG: Starting update_feed.py")
+    register_namespaces()
+    ensure_feed_exists()
+    
+    stamp = load_stamp()
+    if not stamp:
+        print("ERROR: No audio files found to process.", file=sys.stderr)
+        sys.exit(1)
+    
+    mp3_path = find_latest_mp3_by_stamp(stamp)
+    if not mp3_path or not mp3_path.exists():
+        print(f"ERROR: No MP3 found for stamp: {stamp}", file=sys.stderr)
+        sys.exit(1)
+    
+    # CRITICAL: Get the actual file size with error handling
+    try:
+        actual_file_size = mp3_path.stat().st_size
+        print(f"DEBUG: File {mp3_path.name} has size: {actual_file_size} bytes")
+        if actual_file_size == 0:
+            print(f"ERROR: File {mp3_path.name} is empty (0 bytes)", file=sys.stderr)
+            sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: Cannot get file size for {mp3_path.name}: {e}", file=sys.stderr)
+        sys.exit(1)
+    
+    mp3_basename = mp3_path.name
+    mp3_url = f"{BASE_URL}/audio/{mp3_basename}"
+    mp3_size = str(actual_file_size)
+    
+    # guid derive (unique per new episode)
+    guid_text = mp3_basename.replace(".mp3", "")
+    
+    print(f"DEBUG: Processing: {mp3_basename} with GUID: {guid_text}, Size: {mp3_size} bytes")
+    
+    # parse feed
+    print(f"DEBUG: Parsing existing feed: {FEED_PATH}")
+    tree = ET.parse(FEED_PATH)
+    root = tree.getroot()
+    
+    # find channel
+    channel = root.find("channel")
+    if channel is None:
+        print("ERROR: feed.xml missing <channel>", file=sys.stderr)
+        sys.exit(1)
+    
+    print("DEBUG: Found channel element")
+    
+    # check for existing guid (avoid duplicates)
+    existing_guids = set()
+    items = channel.findall("item")
+    print(f"DEBUG: Found {len(items)} existing items in feed")
+    
+    for item in items:
+        guid_elem = item.find("guid")
+        if guid_elem is not None and guid_elem.text:
+            existing_guids.add(guid_elem.text)
+    
+    print(f"DEBUG: Existing GUIDs in feed: {existing_guids}")
+    
+    if guid_text in existing_guids:
+        print(f"DEBUG: Episode for GUID {guid_text} already in feed --- skipping append.")
+        # still update lastBuildDate
+        last = channel.find("lastBuildDate")
+        if last is None:
+            last = ET.SubElement(channel, "lastBuildDate")
+            print("DEBUG: Created lastBuildDate element")
+        last.text = rfc2822_now_gmt()
+        print("DEBUG: Updated lastBuildDate")
+        
+        print("DEBUG: Writing updated feed to disk")
+        tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
+        print("DEBUG: Feed write completed - no new episode added (duplicate)")
+        sys.exit(0)
+    
+    print(f"DEBUG: Adding new episode with GUID: {guid_text}")
+    
+    # Construct new item
+    item = ET.Element("item")
+    
+    title = ET.SubElement(item, "title")
+    title.text = nice_title_from_stamp(stamp)
+    
+    desc = ET.SubElement(item, "description")
+    desc.text = "Executive Briefing: AI Market Trends and Strategic Insights"
+    
+    link = ET.SubElement(item, "link")
+    link.text = f"{BASE_URL}/"
+    
+    enclosure = ET.SubElement(item, "enclosure")
+    enclosure.set("url", mp3_url)
+    enclosure.set("length", mp3_size)
+    enclosure.set("type", "audio/mpeg")
+    
+    pubDate = ET.SubElement(item, "pubDate")
+    pubDate.text = pretty_pubdate_from_stamp(stamp)
+    
+    guid = ET.SubElement(item, "guid")
+    guid.text = guid_text
+    guid.set("isPermaLink", "false")
+    
+    # iTunes episode metadata
+    ET.SubElement(item, "itunes:explicit").text = "false"
+    ET.SubElement(item, "itunes:episodeType").text = "full"
+    
+    print("DEBUG: Constructed new item element")
+    
+    # Insert the new item at the top (newest first)
+    first_item = channel.find("item")
+    if first_item is not None:
+        channel.insert(list(channel).index(first_item), item)
+        print("DEBUG: Inserted new item at top of feed")
+    else:
+        channel.append(item)
+        print("DEBUG: Appended new item to feed (no existing items)")
+    
+    # update lastBuildDate
+    last = channel.find("lastBuildDate")
+    if last is None:
+        last = ET.SubElement(channel, "lastBuildDate")
+        print("DEBUG: Created lastBuildDate element")
+    last.text = rfc2822_now_gmt()
+    print("DEBUG: Updated lastBuildDate")
+    
+    # write back with proper formatting
+    print("DEBUG: Writing updated feed to disk")
+    ET.indent(tree, space="  ")
+    tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
+    print("DEBUG: Feed write completed")
+    
+    # Verify the file was actually written
+    if FEED_PATH.exists():
+        size = FEED_PATH.stat().st_size
+        print(f"DEBUG: Feed file size after write: {size} bytes")
+    else:
+        print("ERROR: Feed file doesn't exist after write!")
+        sys.exit(1)
+    
+    print(f"SUCCESS: Added new episode: {mp3_basename} ({mp3_size} bytes)")
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()
