@@ -2,7 +2,7 @@ name: Weekly AI Executive Brief
 
 on:
   schedule:
-    - cron: '0 15 * * 1' # 8 AM Mountain Time (MDT = UTC-6, MST = UTC-7) MONDAY RUN
+    - cron: '0 15 * * 4' # 8 AM Mountain Time (MDT = UTC-6, MST = UTC-7) Thursday run
   workflow_dispatch: {}
 
 permissions:
