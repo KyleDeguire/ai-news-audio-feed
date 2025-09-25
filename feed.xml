@@ -1,12 +1,12 @@
 <?xml version='1.0' encoding='utf-8'?>
-<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:podcast="https://podcastindex.org/namespace/1.0" version="2.0">
+<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:ns0="http://www.w3.org/2005/Atom" version="2.0">
   <channel>
     <title>AI News Weekly -- Executive Briefing</title>
     <description>Weekly AI news analysis and strategic insights for business leaders</description>
     <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
-    <atom:link href="https://kyledeguire.github.io/ai-news-audio-feed/feed.xml" rel="self" type="application/rss+xml"/>
+    <ns0:link href="https://kyledeguire.github.io/ai-news-audio-feed/feed.xml" rel="self" type="application/rss+xml" />
     <language>en-us</language>
-    <lastBuildDate>Mon, 22 Sep 2025 15:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Thu, 25 Sep 2025 01:28:10 GMT</lastBuildDate>
     <managingEditor>kyledeguire@example.com (Kyle Deguire)</managingEditor>
     <itunes:author>Kyle Deguire</itunes:author>
     <itunes:image href="https://kyledeguire.github.io/ai-news-audio-feed/artwork/cover.jpg" />
@@ -14,6 +14,16 @@
       <itunes:category text="Tech News" />
     </itunes:category>
     <itunes:explicit>false</itunes:explicit>
+    <item>
+      <title>AI Executive Brief - 24 Sep, 2025</title>
+      <description>Executive Briefing: AI Market Trends and Strategic Insights</description>
+      <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
+      <enclosure url="https://kyledeguire.github.io/ai-news-audio-feed/audio/ai_news_20250924.mp3" length="4107329" type="audio/mpeg" />
+      <pubDate>Wed, 24 Sep 2025 00:00:00 GMT</pubDate>
+      <guid isPermaLink="false">ai_news_20250924</guid>
+      <itunes:explicit>false</itunes:explicit>
+      <itunes:episodeType>full</itunes:episodeType>
+    </item>
     <item>
       <title>AI Executive Brief - 22 Sep, 2025</title>
       <description>Executive Briefing: AI Market Trends and Strategic Insights</description>
