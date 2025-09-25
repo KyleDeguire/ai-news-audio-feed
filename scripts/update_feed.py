@@ -111,22 +111,8 @@ def main():
     if channel is None:
         print("ERROR: feed.xml missing <channel>", file=sys.stderr)
         sys.exit(1)
-    # check for existing guid (avoid duplicates)
-    existing_guids = set()
-    for item in channel.findall("item"):
-        guid_elem = item.find("guid")
-        if guid_elem is not None and guid_elem.text:
-            existing_guids.add(guid_elem.text)
-    print(f"Existing GUIDs in feed: {existing_guids}")
-    if guid_text in existing_guids:
-        print(f"Episode for GUID {guid_text} already in feed --- skipping append.")
-        # still update lastBuildDate
-        last = channel.find("lastBuildDate")
-        if last is None:
-            last = ET.SubElement(channel, "lastBuildDate")
-        last.text = rfc2822_now_gmt()
-        tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8") # THIS IS THE ADDED LINE
-        sys.exit(0)
+    # The fix: remove the check for existing guids.
+    # We will always insert the newest item at the top.
     print(f"Adding new episode with GUID: {guid_text}")
     # Construct new item
     item = ET.Element("item")
