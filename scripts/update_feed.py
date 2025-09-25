@@ -118,7 +118,7 @@ def main():
     
     mp3_basename = mp3_path.name
     mp3_url = f"{BASE_URL}/audio/{mp3_basename}"
-    mp3_size = str(actual_file_size)  # Use the actual measured size
+    mp3_size = str(actual_file_size)
     
     # guid derive (unique per new episode)
     guid_text = mp3_basename.replace(".mp3", "")
@@ -170,7 +170,7 @@ def main():
     
     enclosure = ET.SubElement(item, "enclosure")
     enclosure.set("url", mp3_url)
-    enclosure.set("length", mp3_size)  # This will now be correct
+    enclosure.set("length", mp3_size)
     enclosure.set("type", "audio/mpeg")
     
     pubDate = ET.SubElement(item, "pubDate")
