@@ -2,7 +2,7 @@ name: Weekly AI Executive Brief
 
 on:
   schedule:
-    - cron: '0 15 * * 4' # 8 AM Mountain Time on Thursdays (MDT = UTC-6, MST = UTC-7)
+    - cron: '0 15 * * 4' # 8 AM Mountain Time (MDT = UTC-6, MST = UTC-7) - CHANGED FROM MONDAY TO THURSDAY
   workflow_dispatch: {}
 
 permissions:
@@ -51,8 +51,10 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: weekly brief --- audio + transcript + feed"
-          file_pattern: "audio/*.mp3 audio/*.txt feed.xml"
-          add_options: '--force'
+          file_pattern: |
+            audio/*.mp3
+            audio/*.txt
+            feed.xml
 
       # --- Find latest transcript + meta (no heredocs) ---
       - name: Find latest transcript & build email meta
