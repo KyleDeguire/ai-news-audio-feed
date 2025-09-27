@@ -98,7 +98,7 @@ def main():
         print(f"ERROR: Cannot get file size for {mp3_path.name}: {e}", file=sys.stderr)
         sys.exit(1)
     mp3_basename = mp3_path.name
-    mp3_url = f"{BASE_URL}/audio/{mp3_basename}"
+    mp3_url = f"{BASE_URL}/audio/{mp3_basename}?t={int(time.time())}"
     mp3_size = str(actual_file_size)
     # guid derive (unique per new episode)
     guid_text = mp3_basename.replace(".mp3", "")
