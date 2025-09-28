@@ -2,7 +2,7 @@ name: Weekly AI Executive Brief
 
 on:
   schedule:
-    - cron: '0 2 * * 5' # 8 PM Mountain Time (MDT = UTC-6, MST = UTC-7) THURSDAY RUN
+    - cron: '0 15 * * 1' # Mondays at 08:00 AM Mountain (15:00 UTC)
   workflow_dispatch: {}
 
 permissions:
@@ -15,12 +15,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-          
+
       - name: Install deps
         shell: bash
         run: |
@@ -45,87 +45,11 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/update_feed.py
-          
+
       # --- Commit audio + feed ---
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: weekly brief --- audio + transcript + feed"
-          file_pattern: |
-            audio/*.mp3
-            audio/*.txt
-            feed.xml
-
-      # --- Find latest transcript + meta (no heredocs) ---
-      - name: Find latest transcript & build email meta
-        id: latest
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ls -1 audio/*.txt >/dev/null 2>&1; then
-            LATEST_TXT="$(ls -t audio/*.txt | head -n1)"
-            LATEST_MP3="${LATEST_TXT%.txt}.mp3"
-
-            # Extract yyyymmdd from filename tail ai_news_YYYYMMDD.txt
-            STAMP="$(basename "$LATEST_TXT")"
-            STAMP="${STAMP##*_}"; STAMP="${STAMP%.txt}"
-            export STAMP
-
-            READABLE_DATE="$(python -c "import os,datetime as d; s=os.getenv('STAMP'); print(d.datetime.strptime(s,'%Y%m%d').strftime('%A, %b %d, %Y'))")"
-
-            {
-              echo "txt=$LATEST_TXT"
-              echo "mp3=$(basename "$LATEST_MP3")"
-              echo "stamp=$STAMP"
-              echo "date_readable=$READABLE_DATE"
-              echo "found=true"
-            } >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # --- Stash transcript in env as Base64 (safe, no delimiters) ---
-      - name: Read transcript into env (base64)
-        if: steps.latest.outputs.found == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          B64="$(base64 -w0 "${{ steps.latest.outputs.txt }}")"
-          echo "TRANSCRIPT_B64=$B64" >> "$GITHUB_ENV"
-
-      # --- Compute .docx path ---
-      - name: Compute .docx path
-        if: steps.latest.outputs.found == 'true'
-        id: docx
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "path=transcript_${{ steps.latest.outputs.stamp }}.docx" >> "$GITHUB_OUTPUT"
-
-      # --- Build .docx transcript (links + footnotes) ---
-      - name: Build .docx transcript
-        if: steps.latest.outputs.found == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/make_docx.py \
-            --input "${{ steps.latest.outputs.txt }}" \
-            --output "${{ steps.docx.outputs.path }}"
-
-      # --- Email transcript (.docx attached, full body) ---
-      - name: Email transcript
-        if: steps.latest.outputs.found == 'true'
-        env:
-          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }} # 465 for Gmail SSL, 587 for STARTTLS
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          SUBJECT: AI Executive Brief transcript -- ${{ steps.latest.outputs.date_readable }}
-          ATTACH_PATH: ${{ steps.docx.outputs.path }}
-          BODY_B64: ${{ env.TRANSCRIPT_B64 }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/send_email.py
+          commit_message: "Update podcast feed [skip ci]"
+          branch: ${{ github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }} # Explicitly add this token
