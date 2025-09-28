@@ -50,7 +50,7 @@ def nice_title_from_stamp(stamp):
         return f"AI Executive Brief - {stamp}"
 def pretty_pubdate_from_stamp(stamp):
     try:
-        d = datetime.datetime.strptime(stamp, "%Y%m%d")
+        d = datetime.datetime.strptime(stamp, "%Ym%d")
         return d.strftime("%a, %d %b %Y %H:%M:%S GMT")
     except Exception:
         return rfc2822_now_gmt()
