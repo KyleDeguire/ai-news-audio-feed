@@ -7,6 +7,16 @@ from docx.oxml.ns import qn
 
 AUDIO_DIR = Path("audio")
 
+# Section headers to detect and bold
+SECTION_HEADERS = [
+    "Introduction:",
+    "New Products & Capabilities:",
+    "Strategic Business Impact:",
+    "Implementation Opportunities:",
+    "Market Dynamics:",
+    "Talent Market Shifts:"
+]
+
 def denver_date_today():
     import pytz, datetime as dt
     return dt.datetime.now(pytz.timezone('America/Denver')).date()
@@ -19,23 +29,22 @@ def latest_json():
     return files[0] if files else None
 
 def parse_citations_for_html(text):
-    """Convert [1], [2,3] markers to HTML superscripts"""
-    return re.sub(r'\[(\d+(?:,\d+)*)\]', r'<sup>\1</sup>', text)
+    """Convert [1,2] to <sup>1, 2</sup>"""
+    def add_spaces(match):
+        nums = match.group(1).replace(',', ', ')
+        return f'<sup>{nums}</sup>'
+    return re.sub(r'\[(\d+(?:,\d+)*)\]', add_spaces, text)
 
 def parse_citations_for_docx(text):
-    """Split text into runs with citation markers separated for superscript formatting
-    Returns: [(text, is_citation), ...]
-    """
+    """Split text into runs with citation markers separated"""
     parts = []
     last_end = 0
     for match in re.finditer(r'\[(\d+(?:,\d+)*)\]', text):
-        # Add text before citation
         if match.start() > last_end:
             parts.append((text[last_end:match.start()], False))
-        # Add citation as superscript
-        parts.append((match.group(1), True))
+        citation_text = match.group(1).replace(',', ', ')
+        parts.append((citation_text, True))
         last_end = match.end()
-    # Add remaining text
     if last_end < len(text):
         parts.append((text[last_end:], False))
     return parts
@@ -44,15 +53,21 @@ def build_email_html(spoken, footnotes):
     parts = []
     parts.append('<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,Arial,sans-serif;font-size:15px;line-height:1.6;">')
     
-    # Split into paragraphs
     paragraphs = [p.strip() for p in spoken.split('\n\n') if p.strip()]
     
     for para in paragraphs:
         if not para:
             continue
-        # Convert citation markers to superscripts
+        
+        # Check if paragraph starts with a section header
+        is_header = any(para.startswith(h) for h in SECTION_HEADERS)
+        
         para_html = parse_citations_for_html(para)
-        parts.append(f'<p style="margin:0 0 18px 0;">{para_html}</p>')
+        
+        if is_header:
+            parts.append(f'<p style="margin:0 0 18px 0;"><strong>{para_html}</strong></p>')
+        else:
+            parts.append(f'<p style="margin:0 0 18px 0;">{para_html}</p>')
     
     if footnotes:
         parts.append('<hr style="border:none;border-top:1px solid #e5e7eb;margin:10px 0 12px;">')
@@ -84,24 +99,27 @@ def build_docx(docx_path, spoken, footnotes):
         pf.space_after = Pt(18)
         pf.line_spacing = 1.2
     
-    # Split into paragraphs
     paragraphs = [p.strip() for p in spoken.split('\n\n') if p.strip()]
     
     for para_text in paragraphs:
         if not para_text:
             continue
         
+        # Check if this is a section header
+        is_header = any(para_text.startswith(h) for h in SECTION_HEADERS)
+        
         p = doc.add_paragraph()
         parts = parse_citations_for_docx(para_text)
         
         for text, is_citation in parts:
             r = p.add_run(text)
+            if is_header and not is_citation:
+                r.bold = True
             if is_citation:
                 r.font.superscript = True
         
         apply_pfmt(p)
     
-    # Sources section
     if footnotes:
         p = doc.add_paragraph()
         r = p.add_run("Sources")
