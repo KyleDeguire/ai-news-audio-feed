@@ -1,242 +1,192 @@
 #!/usr/bin/env python3
-# scripts/compose_transcript.py
-# Build HTML + DOCX for the transcript with robust fallbacks and sane paragraphing.
-
-import json, re, html
+import json, os, re
 from pathlib import Path
-from typing import Any, Dict, List
-from datetime import datetime
-import pytz
+from typing import List, Dict, Any
 from docx import Document
 from docx.shared import Pt
 from docx.oxml.ns import qn
 
 AUDIO_DIR = Path("audio")
-HEADINGS = [
-    "New Products & Capabilities",
-    "Strategic Business Impact",
-    "Implementation Opportunities",
-    "Market Dynamics",
-    "Talent Market Shifts",
-]
 
-# ---------- time helpers ----------
-def denver_now() -> datetime:
-    return datetime.now(pytz.timezone("America/Denver"))
+# ---------- helpers ----------
+def denver_date_today():
+    import pytz, datetime as dt
+    tz = pytz.timezone('America/Denver')
+    return dt.datetime.now(tz).date()
 
-def subject_date(dt: datetime) -> str:
-    return dt.strftime("%d %b %y")  # e.g., 10 Nov 25
+def short_date_for_subject(d):
+    # e.g., 09 Nov 25
+    return d.strftime("%d %b %y")
 
-# ---------- locate latest assets ----------
-def latest(prefix: str, ext: str) -> Path | None:
-    files = sorted(AUDIO_DIR.glob(f"{prefix}_*.{ext}"), key=lambda p: p.stat().st_mtime, reverse=True)
+def latest_json():
+    files = sorted(AUDIO_DIR.glob("ai_news_*.json"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
     return files[0] if files else None
 
-def latest_json() -> Path | None: return latest("ai_news","json")
-def latest_txt()  -> Path | None: return latest("ai_news","txt")
-
-# ---------- load ----------
-def load_json(path: Path) -> Dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8", errors="ignore"))
-
-def load_txt(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="ignore")
-
-# ---------- normalize model JSON ----------
-def normalize_from_json(data: Dict[str, Any]) -> Dict[str, Any]:
+def as_para_and_sources(para_obj) -> (str, List[int]):
     """
-    Target shape:
-    {
-      "sections":[
-        {"title":"...", "paragraphs":[{"text":"...", "sources":[1,2]}, ...]}
-      ],
-      "footnotes":[{"id":1,"title":"...","url":"..."}],
-      "spoken":"..."   # optional
-    }
+    Accept both:
+      - dict: {"text": "...", "sources": [1,2]}
+      - str:  "..."
     """
-    out = {"sections": [], "footnotes": [], "spoken": (data.get("spoken") or "").strip()}
+    if isinstance(para_obj, dict):
+        text = (para_obj.get("text") or "").strip()
+        srcs = para_obj.get("sources") or []
+        # coerce numeric-ish
+        try:
+            srcs = [int(x) for x in srcs]
+        except Exception:
+            srcs = []
+        return text, srcs
+    else:
+        return (str(para_obj or "").strip(), [])
 
-    # footnotes
-    fns = data.get("footnotes") or []
-    cleaned = []
-    for i, f in enumerate(fns, start=1):
-        if not isinstance(f, dict): continue
-        fid = f.get("id") if isinstance(f.get("id"), int) else i
-        ttl = (f.get("title") or "").strip()
-        url = (f.get("url") or "").strip()
-        if url:
-            cleaned.append({"id": fid, "title": ttl, "url": url})
-    out["footnotes"] = cleaned
-
-    # sections
-    secs = data.get("sections") or []
-    norm_secs = []
-    for s in secs:
-        if isinstance(s, str):
-            norm_secs.append({"title": s.strip(), "paragraphs": []})
-            continue
-        if not isinstance(s, dict): 
-            continue
-        title = (s.get("title") or "").strip()
-        paras = []
-        for p in (s.get("paragraphs") or []):
-            if isinstance(p, str):
-                t = p.strip()
-                if t: paras.append({"text": t, "sources": []})
-                continue
-            if isinstance(p, dict):
-                t = (p.get("text") or "").strip()
-                srcs = [int(x) for x in p.get("sources") or [] if str(x).isdigit()]
-                if t: paras.append({"text": t, "sources": srcs})
-        norm_secs.append({"title": title, "paragraphs": paras})
-    out["sections"] = norm_secs
-    return out
-
-# ---------- paragraph builders ----------
-_SENT_SPLIT = re.compile(r'(?<=[.!?])\s+(?=[A-Z(])')
-
-def paragraphs_from_free_text(text: str) -> List[str]:
-    """Make readable paragraphs from a long script:
-       - ignore trailing 'Sources:' block if present
-       - group 3–5 sentences per paragraph
+def normalize_sections(data: Dict[str, Any]) -> (List[Dict[str, Any]], List[Dict[str, Any]]):
     """
-    if not text: return []
-    # strip any "Sources:" tail
-    lower = text.lower()
-    cut = lower.find("\nsources:")
-    if cut != -1:
-        text = text[:cut]
+    Returns (sections, footnotes).
+    Each section: {"title": str, "paragraphs": [ str | {"text": str, "sources":[ints]} ]}
+    """
+    footnotes = data.get("footnotes") or []
+    sections = data.get("sections")
 
-    # collapse internal whitespace
-    text = re.sub(r'[ \t]+', ' ', text.strip())
-    # if author already used blank lines, keep them
-    blocks = [b.strip() for b in re.split(r'\n\s*\n', text) if b.strip()]
-    if len(blocks) >= 3:
-        return blocks
+    # If we only have a flat spoken transcript, fall back to splitting on blank lines.
+    if not sections:
+        spoken = (data.get("spoken") or "").strip()
+        paras = [p.strip() for p in re.split(r"\n\s*\n", spoken) if p.strip()]
+        sections = [{"title": "", "paragraphs": paras}]
 
-    # otherwise split to sentences and batch into 3–5 per paragraph
-    sents = [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
-    out, buf = [], []
-    for s in sents:
-        buf.append(s)
-        if len(buf) >= 4:  # target 4 sentences per paragraph
-            out.append(" ".join(buf)); buf = []
-    if buf: out.append(" ".join(buf))
-    return out
+    # Ensure each section has title and paragraphs list
+    normalized = []
+    for sec in sections:
+        if isinstance(sec, dict):
+            title = (sec.get("title") or "").strip()
+            paras = sec.get("paragraphs") or []
+        else:
+            # Rare/defensive: section was a string title with no paragraphs
+            title = str(sec).strip()
+            paras = []
+        normalized.append({"title": title, "paragraphs": paras})
+    return normalized, footnotes
 
-def distribute_across_headings(paras: List[str]) -> List[Dict[str, Any]]:
-    """Map paragraphs into the five standard headings evenly."""
-    if not paras: return [{"title": t, "paragraphs": []} for t in HEADINGS]
-    buckets = [[] for _ in HEADINGS]
-    for i, p in enumerate(paras):
-        buckets[i % len(HEADINGS)].append({"text": p, "sources": []})
-    return [{"title": HEADINGS[i], "paragraphs": buckets[i]} for i in range(len(HEADINGS))]
-
-# ---------- render HTML ----------
-def build_html(sections: List[Dict[str, Any]], footnotes: List[Dict[str, Any]]) -> str:
-    parts: List[str] = []
+# ---------- HTML / DOCX builders ----------
+def build_email_html(sections, footnotes):
+    parts = []
     parts.append("<div style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:15px;line-height:1.6;\">")
+
     for sec in sections:
         title = (sec.get("title") or "").strip()
         if title:
-            parts.append(f"<p style='margin:0 0 8px 0'><strong>{html.escape(title.upper())}</strong></p>")
-        for para in sec.get("paragraphs", []):
-            text = (para.get("text") or "").strip()
-            srcs = para.get("sources") or []
-            sup = f"<sup>{','.join(str(int(s)) for s in srcs if str(s).isdigit())}</sup>" if srcs else ""
-            if text:
-                parts.append(f"<p style='margin:0 0 18px 0'>{html.escape(text)}{sup}</p>")
+            parts.append(f'<p style="margin:0 0 8px 0;"><strong>{title}</strong></p>')
+        for para_obj in sec.get("paragraphs", []):
+            text, srcs = as_para_and_sources(para_obj)
+            if not text:
+                continue
+            sup = f"<sup>{','.join(str(i) for i in srcs)}</sup>" if srcs else ""
+            parts.append(f'<p style="margin:0 0 18px 0;">{text}{sup}</p>')
+
     if footnotes:
-        parts.append("<hr style='margin:8px 0;border:none;border-top:1px solid #e4e7ef'>")
-        parts.append("<p style='margin:0 0 6px 0'><strong>Sources</strong></p><ul style='margin:0 0 0 18px;padding:0'>")
+        parts.append('<hr style="border:none;border-top:1px solid #e5e7eb;margin:10px 0 12px;">')
+        parts.append('<p style="margin:0 0 6px 0;"><strong>Sources</strong></p>')
+        parts.append('<ul style="margin:0 0 18px 18px; padding:0;">')
         for f in footnotes:
-            iid = f.get("id"); ttl = (f.get("title") or "").strip(); url = (f.get("url") or "").strip()
-            if not url: continue
+            iid = f.get("id")
+            ttl = (f.get("title") or "").strip()
+            url = (f.get("url") or "").strip()
+            if not url:
+                continue
             label = f"[{iid}]" if iid is not None else "-"
-            ttl_esc = html.escape(ttl) if ttl else ""
-            url_esc = html.escape(url)
-            if ttl_esc:
-                parts.append(f"<li>{label} {ttl_esc} — <a href=\"{url_esc}\">{url_esc}</a></li>")
+            if ttl:
+                parts.append(f'<li style="margin:0 0 6px 0;">{label} {ttl} — <a href="{url}">{url}</a></li>')
             else:
-                parts.append(f"<li>{label} <a href=\"{url_esc}\">{url_esc}</a></li>")
-        parts.append("</ul>")
+                parts.append(f'<li style="margin:0 0 6px 0;">{label} <a href="{url}">{url}</a></li>')
+        parts.append('</ul>')
+
     parts.append("</div>")
     return "".join(parts)
 
-# ---------- render DOCX ----------
-def build_docx(path: Path, sections: List[Dict[str, Any]], footnotes: List[Dict[str, Any]]):
+def build_docx(docx_path: Path, sections, footnotes):
     doc = Document()
-    st = doc.styles["Normal"]
-    st.font.name = "Calibri"
-    st._element.rPr.rFonts.set(qn("w:eastAsia"), "Calibri")
-    st.font.size = Pt(11)
+    # Normal style
+    base = doc.styles['Normal']
+    base.font.name = 'Calibri'
+    base._element.rPr.rFonts.set(qn('w:eastAsia'), 'Calibri')
+    base.font.size = Pt(11)
 
-    def space(p):
+    # Paragraph spacing
+    def apply_pfmt(p):
         pf = p.paragraph_format
         pf.space_after = Pt(18)
         pf.line_spacing = 1.2
 
+    # Body
     for sec in sections:
         title = (sec.get("title") or "").strip()
         if title:
-            p = doc.add_paragraph(); r = p.add_run(title); r.bold = True; space(p)
-        for para in sec.get("paragraphs", []):
-            t = (para.get("text") or "").strip()
-            if not t: continue
-            srcs = para.get("sources") or []
-            p = doc.add_paragraph(); r = p.add_run(t)
+            ptitle = doc.add_paragraph()
+            r = ptitle.add_run(title)
+            r.bold = True
+            apply_pfmt(ptitle)
+        for para_obj in sec.get("paragraphs", []):
+            text, srcs = as_para_and_sources(para_obj)
+            if not text:
+                continue
+            p = doc.add_paragraph()
+            r = p.add_run(text)
             if srcs:
-                r2 = p.add_run(" " + ",".join(str(int(s)) for s in srcs if str(s).isdigit()))
+                r2 = p.add_run(" " + ",".join(str(i) for i in srcs))
                 r2.font.superscript = True
-            space(p)
+            apply_pfmt(p)
 
+    # Sources
     if footnotes:
-        p = doc.add_paragraph(); r = p.add_run("Sources"); r.bold = True; space(p)
+        p = doc.add_paragraph()
+        r = p.add_run("Sources")
+        r.bold = True
+        apply_pfmt(p)
         for f in footnotes:
-            iid = f.get("id"); ttl = (f.get("title") or "").strip(); url = (f.get("url") or "").strip()
-            if not url: continue
+            iid = f.get("id")
+            ttl = (f.get("title") or "").strip()
+            url = (f.get("url") or "").strip()
+            if not url:
+                continue
             line = f"[{iid}] {ttl} — {url}" if ttl else f"[{iid}] {url}"
-            p = doc.add_paragraph(line); space(p)
+            p = doc.add_paragraph(line)
+            apply_pfmt(p)
 
-    doc.save(path)
+    doc.save(docx_path)
 
-# ---------- main ----------
 def main():
     jpath = latest_json()
     if not jpath:
-        raise SystemExit("No ai_news_*.json found. Run generate_brief.py first.")
-    data = load_json(jpath)
-    norm = normalize_from_json(data)
+        raise SystemExit("No JSON transcript found in audio/. Run generate_brief.py first.")
 
-    # Preferred: real paragraphs from JSON sections
-    has_paras = any(len(sec.get("paragraphs") or []) > 0 for sec in norm["sections"])
-    if not has_paras:
-        # Fallback 1: model provided a single 'spoken' string
-        spoken = norm.get("spoken") or ""
-        if not spoken:
-            # Fallback 2: transcript .txt
-            tpath = latest_txt()
-            if tpath:
-                spoken = load_txt(tpath)
-        paras = paragraphs_from_free_text(spoken)
-        norm["sections"] = distribute_across_headings(paras)
+    data = json.loads(jpath.read_text(encoding="utf-8"))
+    sections, footnotes = normalize_sections(data)
 
-    sections = norm["sections"]
-    footnotes = norm["footnotes"]
+    today = denver_date_today()
+    subject = f"AI Exec Brief (transcript) - {short_date_for_subject(today)}"
 
-    today = denver_now()
-    base = f"AI Exec Brief (transcript) - {subject_date(today)}"
-    html_path = AUDIO_DIR / f"{base}.html"
-    docx_path = AUDIO_DIR / f"{base}.docx"
-    subject = base
+    # Output locations
+    out_base = f"AI Exec Brief (transcript) - {short_date_for_subject(today)}"
+    html_path = AUDIO_DIR / (out_base + ".html")
+    docx_path = AUDIO_DIR / (out_base + ".docx")
 
-    html_body = build_html(sections, footnotes)
-    html_path.write_text(html_body, encoding="utf-8")
+    html = build_email_html(sections, footnotes)
+    html_path.write_text(html, encoding="utf-8")
     build_docx(docx_path, sections, footnotes)
 
-    print(f"HTML_BODY={html_path}")
-    print(f"DOCX_PATH={docx_path}")
-    print(f"SUBJECT_LINE={subject}")
+    # Emit for GitHub Actions (both print and GITHUB_OUTPUT)
+    lines = [
+        f"HTML_BODY={html_path}",
+        f"DOCX_PATH={docx_path}",
+        f"SUBJECT_LINE={subject}",
+    ]
+    print("\n".join(lines))
+    gh_out = os.environ.get("GITHUB_OUTPUT")
+    if gh_out:
+        with open(gh_out, "a", encoding="utf-8") as fh:
+            for line in lines:
+                fh.write(line + "\n")
 
 if __name__ == "__main__":
     main()
