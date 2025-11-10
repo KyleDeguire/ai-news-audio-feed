@@ -14,9 +14,7 @@ SOURCES = [
     "https://www.marktechpost.com/feed/",
     "https://techcrunch.com/feed/",
     "https://hbr.org/topic/artificial-intelligence/feed",
-    # Add talent/workforce sources:
-    "https://news.ycombinator.com/rss",  # Tech hiring discussions
-    "https://www.shrm.org/rss/topic/ai-workforce.xml",  # HR perspective
+    "https://news.ycombinator.com/rss",
 ]
 
 def denver_date_today():
@@ -42,8 +40,6 @@ def fetch_headlines(limit=15):
     return items[:limit]
 
 def renumber_citations(text, sources_map):
-    """Renumber citations in order of appearance and return cleaned text + used sources"""
-    # Find all citation markers in order
     citation_pattern = r'\[(\d+(?:,\s*\d+)*)\]'
     citations_found = []
     
@@ -53,21 +49,17 @@ def renumber_citations(text, sources_map):
             if num not in citations_found and num in sources_map:
                 citations_found.append(num)
     
-    # Create renumbering map (old_id -> new_id)
     renumber_map = {old_id: idx + 1 for idx, old_id in enumerate(citations_found)}
     
-    # Replace citations with new numbers
     def replace_citation(match):
         old_nums = [int(n.strip()) for n in match.group(1).split(',')]
-        # Filter valid citations and renumber
         new_nums = sorted(set(renumber_map.get(n) for n in old_nums if n in renumber_map))
         if not new_nums:
-            return ''  # Remove invalid citations
+            return ''
         return f"[{','.join(str(n) for n in new_nums)}]"
     
     cleaned_text = re.sub(citation_pattern, replace_citation, text)
     
-    # Build renumbered sources list
     renumbered_sources = []
     for old_id in citations_found:
         if old_id in sources_map:
@@ -82,24 +74,29 @@ def openai_narrative_brief(api_key, headlines):
     
     headlines_text = "\n".join([f"[{i+1}] {h['title']} - {h['url']}" for i, h in enumerate(headlines)])
     
-    narrative_prompt = f"""Write a 4-5 minute executive AI briefing as a SPOKEN NARRATIVE.
+    narrative_prompt = f"""Write a 4-5 minute executive AI briefing as a SPOKEN NARRATIVE with section headers.
 
-Start: "Hello, here is your weekly update for {intro_date_str()}. Let's dive into the latest in AI developments across five key areas."
+Start: "Introduction: Hello, here is your weekly update for {intro_date_str()}. Let's dive into the latest in AI developments across five key areas."
 
-Structure (5 paragraphs):
-1. First, in new products and capabilities...
-2. Moving on to strategic business impact...
-3. Next, let's explore implementation opportunities...
-4. Now, onto market dynamics...
-5. Finally, let's discuss talent market shifts...
+Structure (use EXACT headers):
+Introduction: [opening paragraph]
+
+New Products & Capabilities: First, in new products and capabilities...
+
+Strategic Business Impact: Moving on to strategic business impact...
+
+Implementation Opportunities: Next, let's explore implementation opportunities...
+
+Market Dynamics: Now, onto market dynamics...
+
+Talent Market Shifts: Finally, let's discuss talent market shifts...
 
 End: "Thank you for tuning in, and I look forward to bringing you more insights next week."
 
 CRITICAL CITATION RULES:
-- After EVERY factual claim, add [1], [2], etc. from the sources below
-- Cite multiple times per paragraph - aim for 3-5 citations per section
-- ONLY use source numbers that exist in the list below (1-15)
-- If you make an inference, still cite the source that informed it
+- After EVERY factual claim, add [1], [2], etc. from sources below
+- Cite 3-5 times per section
+- ONLY use source numbers 1-15
 - Example: "Company X released a tool.[3] This could improve efficiency.[3] Early adopters are seeing results.[5]"
 
 Sources:
@@ -116,16 +113,17 @@ Write flowing narrative with frequent citations."""
     
     transcript_raw = resp1.choices[0].message.content.strip()
     
-    # Build sources map
     sources_map = {i+1: {"id": i+1, "title": h["title"], "url": h["url"]} for i, h in enumerate(headlines)}
-    
-    # Renumber citations and extract used sources
     transcript_cited, sources_used = renumber_citations(transcript_raw, sources_map)
-    
-    # Create clean audio version
     transcript_audio = re.sub(r'\[\d+(?:,\d+)*\]', '', transcript_cited)
     
-    return transcript_cited, transcript_audio, sources_used
+    # Remove section headers from audio (they're visual aids only)
+    audio_clean = transcript_audio
+    for header in ["Introduction:", "New Products & Capabilities:", "Strategic Business Impact:", 
+                   "Implementation Opportunities:", "Market Dynamics:", "Talent Market Shifts:"]:
+        audio_clean = audio_clean.replace(header, "")
+    
+    return transcript_cited, audio_clean, sources_used
 
 def elevenlabs_tts(api_key, voice_id, text, out_mp3):
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
