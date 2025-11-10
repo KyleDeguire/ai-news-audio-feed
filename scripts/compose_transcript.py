@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # scripts/compose_transcript.py
-# Build the HTML email body and DOCX. Robust to sparse/empty JSON by falling back to TXT.
+# Build HTML + DOCX for the transcript with robust fallbacks and sane paragraphing.
 
-import json, html
+import json, re, html
 from pathlib import Path
 from typing import Any, Dict, List
 from datetime import datetime
@@ -12,6 +12,13 @@ from docx.shared import Pt
 from docx.oxml.ns import qn
 
 AUDIO_DIR = Path("audio")
+HEADINGS = [
+    "New Products & Capabilities",
+    "Strategic Business Impact",
+    "Implementation Opportunities",
+    "Market Dynamics",
+    "Talent Market Shifts",
+]
 
 # ---------- time helpers ----------
 def denver_now() -> datetime:
@@ -36,28 +43,25 @@ def load_txt(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
 
 # ---------- normalize model JSON ----------
-def normalize(data: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_from_json(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Normal form:
+    Target shape:
     {
       "sections":[
         {"title":"...", "paragraphs":[{"text":"...", "sources":[1,2]}, ...]}
       ],
-      "footnotes":[{"id":1,"title":"...","url":"..."}]
+      "footnotes":[{"id":1,"title":"...","url":"..."}],
+      "spoken":"..."   # optional
     }
     """
-    out = {"sections": [], "footnotes": []}
+    out = {"sections": [], "footnotes": [], "spoken": (data.get("spoken") or "").strip()}
 
     # footnotes
     fns = data.get("footnotes") or []
     cleaned = []
     for i, f in enumerate(fns, start=1):
         if not isinstance(f, dict): continue
-        fid = f.get("id")
-        try:
-            fid = int(fid) if fid is not None else i
-        except Exception:
-            fid = i
+        fid = f.get("id") if isinstance(f.get("id"), int) else i
         ttl = (f.get("title") or "").strip()
         url = (f.get("url") or "").strip()
         if url:
@@ -82,41 +86,51 @@ def normalize(data: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             if isinstance(p, dict):
                 t = (p.get("text") or "").strip()
-                srcs = p.get("sources") or []
-                good = []
-                for z in srcs:
-                    try: good.append(int(z))
-                    except Exception: pass
-                if t: paras.append({"text": t, "sources": good})
+                srcs = [int(x) for x in p.get("sources") or [] if str(x).isdigit()]
+                if t: paras.append({"text": t, "sources": srcs})
         norm_secs.append({"title": title, "paragraphs": paras})
     out["sections"] = norm_secs
     return out
 
-# ---------- fallback: turn TXT into paragraphs ----------
-def txt_to_sections(txt: str) -> List[Dict[str, Any]]:
-    # Split on blank lines into coherent paragraphs
-    lines = [ln.strip() for ln in txt.splitlines()]
-    paras: List[str] = []
-    buf: List[str] = []
-    for ln in lines:
-        if ln:
-            buf.append(ln)
-        else:
-            if buf:
-                paras.append(" ".join(buf))
-                buf = []
-    if buf: paras.append(" ".join(buf))
+# ---------- paragraph builders ----------
+_SENT_SPLIT = re.compile(r'(?<=[.!?])\s+(?=[A-Z(])')
 
-    # If the transcript includes a "Sources:" block, strip it out for the body
-    cleaned_paras: List[str] = []
-    for p in paras:
-        if p.lower().startswith("sources:"): break
-        cleaned_paras.append(p)
+def paragraphs_from_free_text(text: str) -> List[str]:
+    """Make readable paragraphs from a long script:
+       - ignore trailing 'Sources:' block if present
+       - group 3–5 sentences per paragraph
+    """
+    if not text: return []
+    # strip any "Sources:" tail
+    lower = text.lower()
+    cut = lower.find("\nsources:")
+    if cut != -1:
+        text = text[:cut]
 
-    return [{
-        "title": "",  # no headings when derived from TXT
-        "paragraphs": [{"text": p, "sources": []} for p in cleaned_paras if p],
-    }]
+    # collapse internal whitespace
+    text = re.sub(r'[ \t]+', ' ', text.strip())
+    # if author already used blank lines, keep them
+    blocks = [b.strip() for b in re.split(r'\n\s*\n', text) if b.strip()]
+    if len(blocks) >= 3:
+        return blocks
+
+    # otherwise split to sentences and batch into 3–5 per paragraph
+    sents = [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
+    out, buf = [], []
+    for s in sents:
+        buf.append(s)
+        if len(buf) >= 4:  # target 4 sentences per paragraph
+            out.append(" ".join(buf)); buf = []
+    if buf: out.append(" ".join(buf))
+    return out
+
+def distribute_across_headings(paras: List[str]) -> List[Dict[str, Any]]:
+    """Map paragraphs into the five standard headings evenly."""
+    if not paras: return [{"title": t, "paragraphs": []} for t in HEADINGS]
+    buckets = [[] for _ in HEADINGS]
+    for i, p in enumerate(paras):
+        buckets[i % len(HEADINGS)].append({"text": p, "sources": []})
+    return [{"title": HEADINGS[i], "paragraphs": buckets[i]} for i in range(len(HEADINGS))]
 
 # ---------- render HTML ----------
 def build_html(sections: List[Dict[str, Any]], footnotes: List[Dict[str, Any]]) -> str:
@@ -125,11 +139,11 @@ def build_html(sections: List[Dict[str, Any]], footnotes: List[Dict[str, Any]]) 
     for sec in sections:
         title = (sec.get("title") or "").strip()
         if title:
-            parts.append(f"<p style='margin:0 0 8px 0'><strong>{html.escape(title)}</strong></p>")
+            parts.append(f"<p style='margin:0 0 8px 0'><strong>{html.escape(title.upper())}</strong></p>")
         for para in sec.get("paragraphs", []):
             text = (para.get("text") or "").strip()
             srcs = para.get("sources") or []
-            sup = f"<sup>{','.join(str(int(s)) for s in srcs if isinstance(s,(int,str)))}</sup>" if srcs else ""
+            sup = f"<sup>{','.join(str(int(s)) for s in srcs if str(s).isdigit())}</sup>" if srcs else ""
             if text:
                 parts.append(f"<p style='margin:0 0 18px 0'>{html.escape(text)}{sup}</p>")
     if footnotes:
@@ -170,10 +184,9 @@ def build_docx(path: Path, sections: List[Dict[str, Any]], footnotes: List[Dict[
             t = (para.get("text") or "").strip()
             if not t: continue
             srcs = para.get("sources") or []
-            p = doc.add_paragraph()
-            r = p.add_run(t)
+            p = doc.add_paragraph(); r = p.add_run(t)
             if srcs:
-                r2 = p.add_run(" " + ",".join(str(int(s)) for s in srcs if isinstance(s,(int,str))))
+                r2 = p.add_run(" " + ",".join(str(int(s)) for s in srcs if str(s).isdigit()))
                 r2.font.superscript = True
             space(p)
 
@@ -192,34 +205,35 @@ def main():
     jpath = latest_json()
     if not jpath:
         raise SystemExit("No ai_news_*.json found. Run generate_brief.py first.")
-
     data = load_json(jpath)
-    norm = normalize(data)
+    norm = normalize_from_json(data)
 
-    # If JSON has no usable paragraphs, fall back to the TXT transcript body
-    has_body = any(len(sec.get("paragraphs") or []) > 0 for sec in norm["sections"])
-    if not has_body:
-        tpath = latest_txt()
-        if tpath:
-            txt = load_txt(tpath)
-            norm["sections"] = txt_to_sections(txt)
+    # Preferred: real paragraphs from JSON sections
+    has_paras = any(len(sec.get("paragraphs") or []) > 0 for sec in norm["sections"])
+    if not has_paras:
+        # Fallback 1: model provided a single 'spoken' string
+        spoken = norm.get("spoken") or ""
+        if not spoken:
+            # Fallback 2: transcript .txt
+            tpath = latest_txt()
+            if tpath:
+                spoken = load_txt(tpath)
+        paras = paragraphs_from_free_text(spoken)
+        norm["sections"] = distribute_across_headings(paras)
 
     sections = norm["sections"]
     footnotes = norm["footnotes"]
 
-    # Filenames and subject
     today = denver_now()
     base = f"AI Exec Brief (transcript) - {subject_date(today)}"
     html_path = AUDIO_DIR / f"{base}.html"
     docx_path = AUDIO_DIR / f"{base}.docx"
     subject = base
 
-    # Build artifacts
     html_body = build_html(sections, footnotes)
     html_path.write_text(html_body, encoding="utf-8")
     build_docx(docx_path, sections, footnotes)
 
-    # Outputs for workflow step env parsing
     print(f"HTML_BODY={html_path}")
     print(f"DOCX_PATH={docx_path}")
     print(f"SUBJECT_LINE={subject}")
