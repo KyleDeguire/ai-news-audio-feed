@@ -113,4 +113,3 @@ jobs:
             audio/*
             feed.xml
           branch: ${{ github.ref }}
-          token: ${{ secrets.GITHUB_TOKEN }}
