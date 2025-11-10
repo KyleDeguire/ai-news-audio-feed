@@ -2,8 +2,8 @@ name: Weekly AI Executive Brief
 
 on:
   schedule:
-    - cron: '0 15 * * 1'   # Mondays at 08:00 AM Mountain (15:00 UTC)
-  workflow_dispatch: {}
+    - cron: '0 15 * * 1' # Mondays at 08:00 AM Mountain (15:00 UTC)
+  workflow_dispatch:
 
 permissions:
   contents: write
