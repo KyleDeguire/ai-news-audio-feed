@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
-import os, sys, json, datetime, re, requests, feedparser
+import os, sys, json, datetime, requests, feedparser
 from pathlib import Path
 from openai import OpenAI
 
 AUDIO_DIR = "audio"
+
 MODEL_TEXT = "gpt-4o-mini"
 TARGET_MIN = 4.5
 
-# ElevenLabs TTS
 VOICE_NAME = "Hannah"
 MODEL_TTS = "eleven_multilingual_v2"
-SPEED = 1.0
 STABILITY = 0.3
 SIMILARITY = 0.8
 STYLE = 0.1
 SPEAKER_BOOST = True
 
-VOICE_ID_MAP = {
-    # "Hannah": "xxxxxxxxxxxxxxxxxxxxxxxx",
-}
+VOICE_ID_MAP = {}
 
-SOURCES = [
+SOURCES_FEEDS = [
     "https://www.theverge.com/rss/index.xml",
     "https://feeds.feedburner.com/TechCrunch/artificial-intelligence",
     "https://www.marktechpost.com/feed/",
@@ -28,12 +25,11 @@ SOURCES = [
 
 def denver_date_today():
     import pytz
-    mountain_tz = pytz.timezone('America/Denver')
-    return datetime.datetime.now(mountain_tz).date()
+    tz = pytz.timezone('America/Denver')
+    return datetime.datetime.now(tz).date()
 
 def monday_stamp():
-    d = denver_date_today()
-    return d.strftime("%Y%m%d")
+    return denver_date_today().strftime("%Y%m%d")
 
 def intro_date_str():
     d = denver_date_today()
@@ -41,7 +37,7 @@ def intro_date_str():
 
 def fetch_headlines(limit_total=12):
     items = []
-    for url in SOURCES:
+    for url in SOURCES_FEEDS:
         try:
             feed = feedparser.parse(url)
             for e in feed.entries[:6]:
@@ -61,48 +57,74 @@ def fail(msg):
 
 def openai_structured_brief(api_key: str, user_prompt: str) -> dict:
     """
-    Preferred JSON:
+    Return JSON with:
     {
-      "sentences": [ {"text":"...", "sources":[1,3]}, ... ],
-      "footnotes": [ {"id":1, "title":"...", "url":"..."} ]
+      "sections": [
+        {
+          "title": "NEW PRODUCTS & CAPABILITIES",
+          "paragraphs": [
+            {
+              "sentences": [
+                {"text": "...", "sources":[1,3]},
+                ...
+              ]
+            },
+            ...
+          ]
+        }, ...
+      ],
+      "footnotes": [{"id":1,"title":"...","url":"https://..."}, ...]
     }
-    Fallback JSON (legacy):
-    { "spoken":"...", "footnotes":[...] }
     """
     client = OpenAI(api_key=api_key)
 
     system_msg = (
         "You are a senior strategic AI analyst preparing a weekly 4–5 minute executive audio brief. "
-        "Audience: business executives, strategy consultants, AI adoption leads, and solutions consultants. "
-        "Tone: professional and concise for audio. Focus on actionable intelligence. "
-        "Return JSON with sentence-level attributions:\n"
-        "{ 'sentences': [{'text':'...','sources':[1,2]}, ...], 'footnotes': [{'id':1,'title':'...','url':'...'}] }\n"
-        "The first sentence MUST be exactly: "
-        f"'Hello, here is your weekly update for {intro_date_str()}' "
-        "Do not include URLs or inline brackets inside sentences."
+        "Audience: executives and AI adoption leads. Tone: concise, on-air friendly. "
+        "Return ONLY JSON following the schema I provide. "
+        "Every sentence that draws from a source MUST include one or more integer IDs in `sources`. "
+        "Provide at least 5 DISTINCT footnotes overall. "
+        "Do not include URLs in sentence text. No inline [1] style; use the `sources` array."
     )
 
-    categories = (
-        "1) NEW PRODUCTS & CAPABILITIES — launches, features, availability, practical use-cases\n"
-        "2) STRATEGIC BUSINESS IMPACT — implications for enterprise strategy and competition\n"
-        "3) IMPLEMENTATION OPPORTUNITIES — concrete efficiency and profit plays\n"
-        "4) MARKET DYNAMICS — funding, partnerships, regulation, risks and privacy\n"
-        "5) TALENT MARKET SHIFTS — hiring trends and skill gaps\n"
-    )
+    categories = [
+        "NEW PRODUCTS & CAPABILITIES",
+        "STRATEGIC BUSINESS IMPACT",
+        "IMPLEMENTATION OPPORTUNITIES",
+        "MARKET DYNAMICS",
+        "TALENT MARKET SHIFTS"
+    ]
+
     headlines = fetch_headlines()
+
     user_msg = f"""
-Write ~{int(TARGET_MIN*160)} words (~{TARGET_MIN:0.1f}–{TARGET_MIN+0.7:0.1f} min) across the five categories, in that order.
+Write ~{int(TARGET_MIN*160)} words total (~{TARGET_MIN:0.1f}–{TARGET_MIN+0.7:0.1f} minutes).
+Start with: "Hello, here is your weekly update for {intro_date_str()}."
 
-Rules:
-- No URLs or inline citations inside sentences.
-- Put sources only in footnotes with exact links.
-- Provide sentence-level 'sources' ids array per sentence (empty array if none).
+STRUCTURE (MUST FOLLOW):
+- sections: one object per category, in this exact order:
+  {categories}
+- Each section contains 1–2 paragraphs.
+- Each paragraph is a list of sentences.
+- Each sentence has:
+  - text: the sentence to speak (no URLs)
+  - sources: array of integer IDs (match footnotes.id) or [] if editorial commentary
 
-Optional recent headlines (use only if helpful):
+FOOTNOTES REQUIREMENTS:
+- footnotes: array of objects: {{id,title,url}}
+- at least 5 distinct items
+- ids are 1..N and referenced by sentences.sources
+
+Optional recent headlines to consider:
 {headlines}
 
-Policy/intent:
-{user_prompt}
+Content guidelines:
+- Be specific and useful for operators.
+- You may name tools, companies, products, or people where useful.
+- Avoid hype. Don't read URLs.
+- Distribute sources across the sections, so most paragraphs contain at least one cited sentence.
+
+Now return ONLY valid JSON for: sections + footnotes.
 """.strip()
 
     resp = client.chat.completions.create(
@@ -110,15 +132,16 @@ Policy/intent:
         response_format={"type": "json_object"},
         messages=[{"role":"system","content":system_msg},{"role":"user","content":user_msg}],
         temperature=0.4,
-        max_tokens=1700,
+        max_tokens=2000,
     )
     content = resp.choices[0].message.content.strip()
     try:
         data = json.loads(content)
-        assert isinstance(data, dict)
+        # Very light validation
+        assert "sections" in data and "footnotes" in data
         return data
-    except Exception:
-        return {"spoken": content, "footnotes": []}
+    except Exception as e:
+        fail(f"Model did not return valid structured JSON: {e}\n{content}")
 
 def elevenlabs_tts(api_key: str, voice_id: str, text: str, out_mp3: Path):
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
@@ -138,61 +161,47 @@ def elevenlabs_tts(api_key: str, voice_id: str, text: str, out_mp3: Path):
         fail(f"ElevenLabs TTS error {r.status_code}: {r.text[:500]}")
     out_mp3.write_bytes(r.content)
 
+def flatten_for_voice(sections):
+    """Join all sentences into an on-air script (no citations)."""
+    parts = [f"Hello, here is your weekly update for {intro_date_str()}"]
+    for sec in sections:
+        for para in sec.get("paragraphs", []):
+            sent_texts = [s.get("text","").strip() for s in para.get("sentences", []) if s.get("text")]
+            if sent_texts:
+                parts.append(" ".join(sent_texts))
+    return "\n\n".join(parts).strip()
+
 def main():
     api_key = os.environ.get("OPENAI_API_KEY","").strip()
-    if not api_key: fail("Missing OPENAI_API_KEY.")
-    el_key  = os.environ.get("ELEVENLABS_API_KEY","").strip()
-    if not el_key:  fail("Missing ELEVENLABS_API_KEY.")
+    if not api_key: fail("Missing OPENAI_API_KEY")
+
+    el_key = os.environ.get("ELEVENLABS_API_KEY","").strip()
+    if not el_key: fail("Missing ELEVENLABS_API_KEY")
+
     voice_id = os.environ.get("ELEVENLABS_VOICE_ID","").strip() or VOICE_ID_MAP.get(VOICE_NAME,"").strip()
-    if not voice_id: fail("Missing ELEVENLABS_VOICE_ID.")
+    if not voice_id: fail("Missing ELEVENLABS_VOICE_ID")
 
-    brief_spec = ("Create a weekly AI executive briefing for operators. Keep it concise and useful. "
-                  "Avoid filler and do not read source attributions aloud.")
+    spec = (
+        "Create a weekly AI executive briefing. Keep signal high, avoid filler. "
+        "Distribute citations across the analysis; most paragraphs should include at least one sourced sentence."
+    )
 
-    data = openai_structured_brief(api_key, brief_spec)
-
-    sentences = data.get("sentences")
+    data = openai_structured_brief(api_key, spec)
+    sections = data.get("sections", [])
     footnotes = data.get("footnotes", [])
 
-    if sentences and isinstance(sentences, list):
-        spoken_text = " ".join([s.get("text","").strip() for s in sentences if s.get("text")])
-        structured = {"sentences": sentences, "footnotes": footnotes}
-    else:
-        # Legacy fallback
-        spoken_text = (data.get("spoken") or "").strip()
-        if not spoken_text:
-            fail("OpenAI returned no spoken content.")
-        structured = {
-            "sentences": [{"text": t.strip(), "sources": []}
-                          for t in re.split(r'(?<=[.!?])\s+', spoken_text) if t.strip()],
-            "footnotes": footnotes
-        }
-
+    # Persist machine-readable JSON for composing the doc/email
     Path(AUDIO_DIR).mkdir(exist_ok=True)
     base = f"ai_news_{monday_stamp()}"
-    mp3_path = Path(AUDIO_DIR)/f"{base}.mp3"
-    json_path = Path(AUDIO_DIR)/f"{base}.json"
-    txt_path  = Path(AUDIO_DIR)/f"{base}.txt"
+    json_path = Path(AUDIO_DIR) / f"{base}.json"
+    json_path.write_text(json.dumps({"sections":sections,"footnotes":footnotes}, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # TTS from spoken_text
-    elevenlabs_tts(el_key, voice_id, spoken_text, mp3_path)
+    # Build audio from flattened script (no citations)
+    mp3_path = Path(AUDIO_DIR) / f"{base}.mp3"
+    spoken = flatten_for_voice(sections)
+    elevenlabs_tts(el_key, voice_id, spoken, mp3_path)
 
-    # Keep simple .txt with Sources block for continuity
-    src_block = ""
-    if footnotes:
-        lines = ["", "---", "Sources:"]
-        for item in footnotes:
-            iid = item.get("id"); ttl = (item.get("title") or "").strip(); url = (item.get("url") or "").strip()
-            if not url: continue
-            label = f"[{iid}]" if iid else "- "
-            lines.append(f"{label} {ttl} --- {url}" if ttl else f"{label} {url}")
-        src_block = "\n".join(lines)
-    txt_path.write_text(spoken_text + ("\n"+src_block if src_block else ""), encoding="utf-8")
-
-    # Save structured JSON for compose_transcript.py
-    json_path.write_text(json.dumps(structured, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    print(f"Wrote {mp3_path}, {txt_path}, and {json_path}")
+    print(f"Wrote {mp3_path} and {json_path}")
 
 if __name__ == "__main__":
     main()
