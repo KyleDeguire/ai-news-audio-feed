@@ -77,25 +77,30 @@ def openai_narrative_brief(api_key, headlines):
     narrative_prompt = f"""Write a 4-5 minute executive AI briefing with clear section headers.
 
 CRITICAL FORMAT RULES:
-- Write section headers as: "Introduction:" (no asterisks, no markdown)
-- Put content on same line after the colon
+- Write section headers on their OWN line: "Introduction:"
+- Put content in paragraphs BELOW each header
 - Do NOT use **bold markdown** anywhere
 - Use plain text only
 
-Start: "Introduction: Hello, here is your weekly update for {intro_date_str()}. Let's dive into the latest in AI developments across five key areas."
+Start with:
+Introduction:
+Hello, here is your weekly update for {intro_date_str()}. Let's dive into the latest in AI developments across five key areas.
 
-Structure:
-Introduction: [opening text]
+Structure (each header on its own line, content below):
+New Products & Capabilities:
+First, in new products and capabilities...[content with citations]
 
-New Products & Capabilities: First, in new products and capabilities...[content with citations]
+Strategic Business Impact:
+Moving on to strategic business impact...[content with citations]
 
-Strategic Business Impact: Moving on to strategic business impact...[content with citations]
+Implementation Opportunities:
+Next, let's explore implementation opportunities...[content with citations]
 
-Implementation Opportunities: Next, let's explore implementation opportunities...[content with citations]
+Market Dynamics:
+Now, onto market dynamics...[content with citations]
 
-Market Dynamics: Now, onto market dynamics...[content with citations]
-
-Talent Market Shifts: Finally, let's discuss talent market shifts...[content with citations]
+Talent Market Shifts:
+Finally, let's discuss talent market shifts...[content with citations]
 
 End with: "Thank you for tuning in, and I look forward to bringing you more insights next week."
 
@@ -119,8 +124,8 @@ Write flowing narrative with frequent citations. NO MARKDOWN FORMATTING."""
     transcript_raw = resp1.choices[0].message.content.strip()
     
     # Remove any markdown formatting that OpenAI might add
-    transcript_raw = re.sub(r'\*\*([^*]+)\*\*', r'\1', transcript_raw)  # Remove **bold**
-    transcript_raw = re.sub(r'\*([^*]+)\*', r'\1', transcript_raw)      # Remove *italic*
+    transcript_raw = re.sub(r'\*\*([^*]+)\*\*', r'\1', transcript_raw)
+    transcript_raw = re.sub(r'\*([^*]+)\*', r'\1', transcript_raw)
     
     sources_map = {i+1: {"id": i+1, "title": h["title"], "url": h["url"]} for i, h in enumerate(headlines)}
     transcript_cited, sources_used = renumber_citations(transcript_raw, sources_map)
