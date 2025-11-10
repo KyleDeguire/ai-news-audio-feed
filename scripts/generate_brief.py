@@ -38,18 +38,52 @@ def fetch_headlines(limit=15):
         if len(items) >= limit: break
     return items[:limit]
 
+def renumber_citations(text, sources_map):
+    """Renumber citations in order of appearance and return cleaned text + used sources"""
+    # Find all citation markers in order
+    citation_pattern = r'\[(\d+(?:,\s*\d+)*)\]'
+    citations_found = []
+    
+    for match in re.finditer(citation_pattern, text):
+        nums = [int(n.strip()) for n in match.group(1).split(',')]
+        for num in nums:
+            if num not in citations_found and num in sources_map:
+                citations_found.append(num)
+    
+    # Create renumbering map (old_id -> new_id)
+    renumber_map = {old_id: idx + 1 for idx, old_id in enumerate(citations_found)}
+    
+    # Replace citations with new numbers
+    def replace_citation(match):
+        old_nums = [int(n.strip()) for n in match.group(1).split(',')]
+        # Filter valid citations and renumber
+        new_nums = sorted(set(renumber_map.get(n) for n in old_nums if n in renumber_map))
+        if not new_nums:
+            return ''  # Remove invalid citations
+        return f"[{','.join(str(n) for n in new_nums)}]"
+    
+    cleaned_text = re.sub(citation_pattern, replace_citation, text)
+    
+    # Build renumbered sources list
+    renumbered_sources = []
+    for old_id in citations_found:
+        if old_id in sources_map:
+            src = sources_map[old_id].copy()
+            src['id'] = renumber_map[old_id]
+            renumbered_sources.append(src)
+    
+    return cleaned_text, renumbered_sources
+
 def openai_narrative_brief(api_key, headlines):
-    """Generate brief in TWO separate calls to avoid JSON parsing issues"""
     client = OpenAI(api_key=api_key)
     
     headlines_text = "\n".join([f"[{i+1}] {h['title']} - {h['url']}" for i, h in enumerate(headlines)])
     
-    # CALL 1: Generate the narrative (no JSON formatting issues)
-    narrative_prompt = f"""Write a 4-5 minute executive AI briefing as a flowing SPOKEN NARRATIVE.
+    narrative_prompt = f"""Write a 4-5 minute executive AI briefing as a SPOKEN NARRATIVE.
 
 Start: "Hello, here is your weekly update for {intro_date_str()}. Let's dive into the latest in AI developments across five key areas."
 
-5 sections (2-3 sentences each):
+Structure (5 paragraphs):
 1. First, in new products and capabilities...
 2. Moving on to strategic business impact...
 3. Next, let's explore implementation opportunities...
@@ -58,10 +92,17 @@ Start: "Hello, here is your weekly update for {intro_date_str()}. Let's dive int
 
 End: "Thank you for tuning in, and I look forward to bringing you more insights next week."
 
-After sentences referencing these sources, add citation markers [1], [2], etc:
+CRITICAL CITATION RULES:
+- After EVERY factual claim, add [1], [2], etc. from the sources below
+- Cite multiple times per paragraph - aim for 3-5 citations per section
+- ONLY use source numbers that exist in the list below (1-15)
+- If you make an inference, still cite the source that informed it
+- Example: "Company X released a tool.[3] This could improve efficiency.[3] Early adopters are seeing results.[5]"
+
+Sources:
 {headlines_text}
 
-Write as one continuous narrative. Be conversational and executive-focused."""
+Write flowing narrative with frequent citations."""
 
     resp1 = client.chat.completions.create(
         model=MODEL_TEXT,
@@ -70,37 +111,18 @@ Write as one continuous narrative. Be conversational and executive-focused."""
         max_tokens=1800,
     )
     
-    transcript_cited = resp1.choices[0].message.content.strip()
+    transcript_raw = resp1.choices[0].message.content.strip()
     
-    # CALL 2: Extract which sources were actually used
-    sources_prompt = f"""From this transcript, list which source numbers [1], [2], etc. were referenced:
-
-{transcript_cited}
-
-Available sources:
-{headlines_text}
-
-Return ONLY a JSON array of the sources that were cited: {{"sources": [{{"id": 1, "title": "...", "url": "..."}}, ...]}}"""
-
-    resp2 = client.chat.completions.create(
-        model=MODEL_TEXT,
-        response_format={"type": "json_object"},
-        messages=[{"role": "user", "content": sources_prompt}],
-        temperature=0,
-        max_tokens=800,
-    )
+    # Build sources map
+    sources_map = {i+1: {"id": i+1, "title": h["title"], "url": h["url"]} for i, h in enumerate(headlines)}
     
-    try:
-        sources_data = json.loads(resp2.choices[0].message.content)
-        sources = sources_data.get("sources", [])
-    except:
-        # Fallback: return all headlines as sources
-        sources = [{"id": i+1, "title": h["title"], "url": h["url"]} for i, h in enumerate(headlines)]
+    # Renumber citations and extract used sources
+    transcript_cited, sources_used = renumber_citations(transcript_raw, sources_map)
     
-    # Create clean audio version (remove citation markers)
+    # Create clean audio version
     transcript_audio = re.sub(r'\[\d+(?:,\d+)*\]', '', transcript_cited)
     
-    return transcript_cited, transcript_audio, sources
+    return transcript_cited, transcript_audio, sources_used
 
 def elevenlabs_tts(api_key, voice_id, text, out_mp3):
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
@@ -150,7 +172,7 @@ def main():
         print("ERROR: Empty transcript", file=sys.stderr)
         sys.exit(1)
     
-    print(f"✓ Transcript: {len(transcript_audio)} chars, {len(sources)} sources")
+    print(f"✓ Transcript: {len(transcript_audio)} chars, {len(sources)} sources cited")
     
     AUDIO_DIR.mkdir(exist_ok=True)
     base = f"ai_news_{denver_date_today().strftime('%Y%m%d')}"
@@ -158,14 +180,14 @@ def main():
     json_path = AUDIO_DIR / f"{base}.json"
     txt_path = AUDIO_DIR / f"{base}.txt"
     
-    # Audio generation
     elevenlabs_tts(el_key, voice_id, transcript_audio, mp3_path)
     
-    if not mp3_path.exists():
-        print(f"ERROR: MP3 not created", file=sys.stderr)
+    if not mp3_path.exists() or mp3_path.stat().st_size == 0:
+        print(f"ERROR: MP3 not created or empty", file=sys.stderr)
         sys.exit(1)
     
-    # Save files
+    print(f"✓ MP3 verified: {mp3_path.stat().st_size / (1024*1024):.2f} MB")
+    
     json_path.write_text(json.dumps({"spoken": transcript_cited, "footnotes": sources}, indent=2), encoding="utf-8")
     
     lines = [transcript_cited, "", "---", "", "Sources:"]
