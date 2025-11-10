@@ -14,6 +14,9 @@ SOURCES = [
     "https://www.marktechpost.com/feed/",
     "https://techcrunch.com/feed/",
     "https://hbr.org/topic/artificial-intelligence/feed",
+    # Add talent/workforce sources:
+    "https://news.ycombinator.com/rss",  # Tech hiring discussions
+    "https://www.shrm.org/rss/topic/ai-workforce.xml",  # HR perspective
 ]
 
 def denver_date_today():
