@@ -1,204 +1,213 @@
 #!/usr/bin/env python3
-import json, os, re
+import os, sys, json, datetime as dt, requests, feedparser, re
 from pathlib import Path
-from docx import Document
-from docx.shared import Pt
-from docx.oxml.ns import qn
+from openai import OpenAI
 
 AUDIO_DIR = Path("audio")
+MODEL_TEXT = "gpt-4o-mini"
+MODEL_TTS = "eleven_multilingual_v2"
+STABILITY, SIMILARITY, STYLE, SPEAKER_BOOST = 0.3, 0.8, 0.1, True
 
-SECTION_HEADERS = [
-    "Introduction:",
-    "New Products & Capabilities:",
-    "Strategic Business Impact:",
-    "Implementation Opportunities:",
-    "Market Dynamics:",
-    "Talent Market Shifts:"
+SOURCES = [
+    "https://www.theverge.com/rss/index.xml",
+    "https://feeds.feedburner.com/TechCrunch/artificial-intelligence",
+    "https://www.marktechpost.com/feed/",
+    "https://techcrunch.com/feed/",
+    "https://hbr.org/topic/artificial-intelligence/feed",
+    "https://news.ycombinator.com/rss",
 ]
 
 def denver_date_today():
-    import pytz, datetime as dt
-    return dt.datetime.now(pytz.timezone('America/Denver')).date()
+    import pytz
+    return dt.datetime.now(pytz.timezone("America/Denver")).date()
 
-def short_date_for_subject(d):
-    return d.strftime("%d %b %y")
+def intro_date_str():
+    d = denver_date_today()
+    return f"{d.strftime('%A')}, {d.strftime('%B')} {d.day}, {d.strftime('%Y')}"
 
-def latest_json():
-    files = sorted(AUDIO_DIR.glob("ai_news_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[0] if files else None
+def fetch_headlines(limit=15):
+    items = []
+    for url in SOURCES:
+        try:
+            feed = feedparser.parse(url)
+            for e in feed.entries[:5]:
+                title = getattr(e, "title", "").strip()
+                link = getattr(e, "link", "").strip()
+                if title and link:
+                    items.append({"title": title, "url": link})
+        except: pass
+        if len(items) >= limit: break
+    return items[:limit]
 
-def parse_citations_for_html(text):
-    """Convert [1,2] to <sup>1, 2</sup>"""
-    def add_spaces(match):
-        nums = match.group(1).replace(',', ', ')
-        return f'<sup>{nums}</sup>'
-    return re.sub(r'\[(\d+(?:,\d+)*)\]', add_spaces, text)
+def renumber_citations(text, sources_map):
+    citation_pattern = r'\[(\d+(?:,\s*\d+)*)\]'
+    citations_found = []
+    
+    for match in re.finditer(citation_pattern, text):
+        nums = [int(n.strip()) for n in match.group(1).split(',')]
+        for num in nums:
+            if num not in citations_found and num in sources_map:
+                citations_found.append(num)
+    
+    renumber_map = {old_id: idx + 1 for idx, old_id in enumerate(citations_found)}
+    
+    def replace_citation(match):
+        old_nums = [int(n.strip()) for n in match.group(1).split(',')]
+        new_nums = sorted(set(renumber_map.get(n) for n in old_nums if n in renumber_map))
+        if not new_nums:
+            return ''
+        return f"[{','.join(str(n) for n in new_nums)}]"
+    
+    cleaned_text = re.sub(citation_pattern, replace_citation, text)
+    
+    renumbered_sources = []
+    for old_id in citations_found:
+        if old_id in sources_map:
+            src = sources_map[old_id].copy()
+            src['id'] = renumber_map[old_id]
+            renumbered_sources.append(src)
+    
+    return cleaned_text, renumbered_sources
 
-def parse_citations_for_docx(text):
-    """Split text into runs with citation markers separated"""
-    parts = []
-    last_end = 0
-    for match in re.finditer(r'\[(\d+(?:,\d+)*)\]', text):
-        if match.start() > last_end:
-            parts.append((text[last_end:match.start()], False))
-        citation_text = match.group(1).replace(',', ', ')
-        parts.append((citation_text, True))
-        last_end = match.end()
-    if last_end < len(text):
-        parts.append((text[last_end:], False))
-    return parts
+def openai_narrative_brief(api_key, headlines):
+    client = OpenAI(api_key=api_key)
+    
+    headlines_text = "\n".join([f"[{i+1}] {h['title']} - {h['url']}" for i, h in enumerate(headlines)])
+    
+    narrative_prompt = f"""Write a 4-5 minute executive AI briefing with clear section headers.
 
-def split_header_and_content(para_text):
-    """Split 'Header: content' into ('Header:', 'content')"""
-    for header in SECTION_HEADERS:
-        if para_text.startswith(header):
-            # Split on the header, get content after it
-            content = para_text[len(header):].strip()
-            return header, content
-    return None, para_text
+CRITICAL FORMAT RULES:
+- Write section headers as: "Introduction:" (no asterisks, no markdown)
+- Put content on same line after the colon
+- Do NOT use **bold markdown** anywhere
+- Use plain text only
 
-def build_email_html(spoken, footnotes):
-    parts = []
-    parts.append('<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,Arial,sans-serif;font-size:15px;line-height:1.6;">')
-    
-    paragraphs = [p.strip() for p in spoken.split('\n\n') if p.strip()]
-    
-    for para in paragraphs:
-        if not para:
-            continue
-        
-        # Check if paragraph has a section header
-        header, content = split_header_and_content(para)
-        
-        if header:
-            # Output header as separate bold paragraph
-            parts.append(f'<p style="margin:0 0 8px 0;"><strong>{header}</strong></p>')
-            if content:
-                # Output content below header
-                content_html = parse_citations_for_html(content)
-                parts.append(f'<p style="margin:0 0 18px 0;">{content_html}</p>')
-        else:
-            # Regular paragraph (no header)
-            para_html = parse_citations_for_html(para)
-            parts.append(f'<p style="margin:0 0 18px 0;">{para_html}</p>')
-    
-    if footnotes:
-        parts.append('<hr style="border:none;border-top:1px solid #e5e7eb;margin:10px 0 12px;">')
-        parts.append('<p style="margin:0 0 6px 0;"><strong>Sources</strong></p>')
-        parts.append('<ul style="margin:0 0 18px 18px; padding:0;">')
-        for f in footnotes:
-            sid = f.get("id", "?")
-            title = (f.get("title") or "").strip()
-            url = (f.get("url") or "").strip()
-            if url:
-                if title:
-                    parts.append(f'<li style="margin:0 0 6px 0;">[{sid}] {title} — <a href="{url}">{url}</a></li>')
-                else:
-                    parts.append(f'<li style="margin:0 0 6px 0;">[{sid}] <a href="{url}">{url}</a></li>')
-        parts.append('</ul>')
-    
-    parts.append('</div>')
-    return ''.join(parts)
+Start: "Introduction: Hello, here is your weekly update for {intro_date_str()}. Let's dive into the latest in AI developments across five key areas."
 
-def build_docx(docx_path, spoken, footnotes):
-    doc = Document()
-    base = doc.styles['Normal']
-    base.font.name = 'Calibri'
-    base._element.rPr.rFonts.set(qn('w:eastAsia'), 'Calibri')
-    base.font.size = Pt(11)
+Structure:
+Introduction: [opening text]
+
+New Products & Capabilities: First, in new products and capabilities...[content with citations]
+
+Strategic Business Impact: Moving on to strategic business impact...[content with citations]
+
+Implementation Opportunities: Next, let's explore implementation opportunities...[content with citations]
+
+Market Dynamics: Now, onto market dynamics...[content with citations]
+
+Talent Market Shifts: Finally, let's discuss talent market shifts...[content with citations]
+
+End with: "Thank you for tuning in, and I look forward to bringing you more insights next week."
+
+CITATION RULES:
+- After EVERY factual claim, add [1], [2], etc.
+- Cite 3-5 times per section
+- ONLY use source numbers 1-15
+
+Sources:
+{headlines_text}
+
+Write flowing narrative with frequent citations. NO MARKDOWN FORMATTING."""
+
+    resp1 = client.chat.completions.create(
+        model=MODEL_TEXT,
+        messages=[{"role": "user", "content": narrative_prompt}],
+        temperature=0.5,
+        max_tokens=1800,
+    )
     
-    def apply_pfmt(p):
-        pf = p.paragraph_format
-        pf.space_after = Pt(18)
-        pf.line_spacing = 1.2
+    transcript_raw = resp1.choices[0].message.content.strip()
     
-    paragraphs = [p.strip() for p in spoken.split('\n\n') if p.strip()]
+    # Remove any markdown formatting that OpenAI might add
+    transcript_raw = re.sub(r'\*\*([^*]+)\*\*', r'\1', transcript_raw)  # Remove **bold**
+    transcript_raw = re.sub(r'\*([^*]+)\*', r'\1', transcript_raw)      # Remove *italic*
     
-    for para_text in paragraphs:
-        if not para_text:
-            continue
-        
-        # Check if paragraph has section header
-        header, content = split_header_and_content(para_text)
-        
-        if header:
-            # Create header paragraph
-            p_header = doc.add_paragraph()
-            r = p_header.add_run(header)
-            r.bold = True
-            apply_pfmt(p_header)
-            
-            # Create content paragraph if there's content
-            if content:
-                p_content = doc.add_paragraph()
-                parts = parse_citations_for_docx(content)
-                for text, is_citation in parts:
-                    r = p_content.add_run(text)
-                    if is_citation:
-                        r.font.superscript = True
-                apply_pfmt(p_content)
-        else:
-            # Regular paragraph
-            p = doc.add_paragraph()
-            parts = parse_citations_for_docx(para_text)
-            for text, is_citation in parts:
-                r = p.add_run(text)
-                if is_citation:
-                    r.font.superscript = True
-            apply_pfmt(p)
+    sources_map = {i+1: {"id": i+1, "title": h["title"], "url": h["url"]} for i, h in enumerate(headlines)}
+    transcript_cited, sources_used = renumber_citations(transcript_raw, sources_map)
+    transcript_audio = re.sub(r'\[\d+(?:,\d+)*\]', '', transcript_cited)
     
-    if footnotes:
-        p = doc.add_paragraph()
-        r = p.add_run("Sources")
-        r.bold = True
-        apply_pfmt(p)
-        
-        for f in footnotes:
-            sid = f.get("id", "?")
-            title = (f.get("title") or "").strip()
-            url = (f.get("url") or "").strip()
-            if url:
-                line = f"[{sid}] {title} — {url}" if title else f"[{sid}] {url}"
-                p = doc.add_paragraph(line)
-                apply_pfmt(p)
+    # Remove section headers from audio
+    audio_clean = transcript_audio
+    for header in ["Introduction:", "New Products & Capabilities:", "Strategic Business Impact:", 
+                   "Implementation Opportunities:", "Market Dynamics:", "Talent Market Shifts:"]:
+        audio_clean = audio_clean.replace(header, "")
     
-    doc.save(docx_path)
+    return transcript_cited, audio_clean, sources_used
+
+def elevenlabs_tts(api_key, voice_id, text, out_mp3):
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    payload = {
+        "model_id": MODEL_TTS,
+        "text": text,
+        "voice_settings": {
+            "stability": STABILITY,
+            "similarity_boost": SIMILARITY,
+            "style": STYLE,
+            "use_speaker_boost": SPEAKER_BOOST
+        }
+    }
+    headers = {
+        "xi-api-key": api_key,
+        "accept": "audio/mpeg",
+        "content-type": "application/json"
+    }
+    
+    print(f"Calling ElevenLabs (text: {len(text)} chars)...")
+    r = requests.post(url, headers=headers, json=payload, timeout=180)
+    
+    if r.status_code != 200:
+        print(f"ERROR: ElevenLabs {r.status_code}: {r.text[:500]}", file=sys.stderr)
+        sys.exit(1)
+    
+    out_mp3.write_bytes(r.content)
+    print(f"✓ Audio: {out_mp3.name} ({len(r.content)/(1024*1024):.2f} MB)")
 
 def main():
-    jpath = latest_json()
-    if not jpath:
-        raise SystemExit("No JSON transcript found in audio/")
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    el_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
+    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
     
-    data = json.loads(jpath.read_text(encoding="utf-8"))
-    spoken = data.get("spoken", "").strip()
-    footnotes = data.get("footnotes", [])
+    if not all([api_key, el_key, voice_id]):
+        print("ERROR: Missing API keys", file=sys.stderr)
+        sys.exit(1)
     
-    if not spoken:
-        raise SystemExit("Empty transcript in JSON")
+    print("Fetching headlines...")
+    headlines = fetch_headlines()
+    print(f"✓ {len(headlines)} headlines")
     
-    today = denver_date_today()
-    subject = f"AI Exec Brief (transcript) - {short_date_for_subject(today)}"
-    out_base = f"AI Exec Brief (transcript) - {short_date_for_subject(today)}"
+    print("Generating brief...")
+    transcript_cited, transcript_audio, sources = openai_narrative_brief(api_key, headlines)
     
-    html_path = AUDIO_DIR / (out_base + ".html")
-    docx_path = AUDIO_DIR / (out_base + ".docx")
+    if not transcript_audio:
+        print("ERROR: Empty transcript", file=sys.stderr)
+        sys.exit(1)
     
-    html = build_email_html(spoken, footnotes)
-    html_path.write_text(html, encoding="utf-8")
-    build_docx(docx_path, spoken, footnotes)
+    print(f"✓ Transcript: {len(transcript_audio)} chars, {len(sources)} sources cited")
     
-    lines = [
-        f"HTML_BODY={html_path}",
-        f"DOCX_PATH={docx_path}",
-        f"SUBJECT_LINE={subject}",
-    ]
-    print("\n".join(lines))
+    AUDIO_DIR.mkdir(exist_ok=True)
+    base = f"ai_news_{denver_date_today().strftime('%Y%m%d')}"
+    mp3_path = AUDIO_DIR / f"{base}.mp3"
+    json_path = AUDIO_DIR / f"{base}.json"
+    txt_path = AUDIO_DIR / f"{base}.txt"
     
-    gh_out = os.environ.get("GITHUB_OUTPUT")
-    if gh_out:
-        with open(gh_out, "a", encoding="utf-8") as fh:
-            for line in lines:
-                fh.write(line + "\n")
+    elevenlabs_tts(el_key, voice_id, transcript_audio, mp3_path)
+    
+    if not mp3_path.exists() or mp3_path.stat().st_size == 0:
+        print(f"ERROR: MP3 not created or empty", file=sys.stderr)
+        sys.exit(1)
+    
+    print(f"✓ MP3 verified: {mp3_path.stat().st_size / (1024*1024):.2f} MB")
+    
+    json_path.write_text(json.dumps({"spoken": transcript_cited, "footnotes": sources}, indent=2), encoding="utf-8")
+    
+    lines = [transcript_cited, "", "---", "", "Sources:"]
+    for s in sources:
+        sid, title, url = s.get("id", "?"), (s.get("title") or "").strip(), (s.get("url") or "").strip()
+        if url:
+            lines.append(f"\n[{sid}] {title} --- {url}" if title else f"\n[{sid}] {url}")
+    txt_path.write_text("\n".join(lines), encoding="utf-8")
+    
+    print(f"✓ Complete: {mp3_path.name}, {json_path.name}, {txt_path.name}")
 
 if __name__ == "__main__":
     main()
