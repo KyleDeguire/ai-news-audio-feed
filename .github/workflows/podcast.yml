@@ -2,7 +2,7 @@ name: Weekly AI Executive Brief
 
 on:
   schedule:
-    - cron: '0 15 * * 1' # Mondays at 08:00 AM Mountain (15:00 UTC)
+    - cron: '0 15 * * 1'   # Mondays at 08:00 AM Mountain (15:00 UTC)
   workflow_dispatch: {}
 
 permissions:
@@ -28,49 +28,64 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Generate audio + transcript (.txt in /audio) ---
-      - name: Generate MP3 + transcript
+      # --- Generate MP3 + JSON (sentences + footnotes) ---
+      - name: Generate MP3 + JSON transcript
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
+          ELEVENLABS_API_KEY:  ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         shell: bash
         run: |
           set -euo pipefail
           python scripts/generate_brief.py
 
-      # --- Update feed to latest mp3 ---
+      # --- Update RSS feed to latest MP3 ---
       - name: Update feed.xml (point enclosure to latest mp3)
         shell: bash
         run: |
           set -euo pipefail
           python scripts/update_feed.py
 
-      # --- Commit audio + feed ---
+      # --- Commit audio + feed changes ---
       - name: Commit audio + feed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Update podcast feed [skip ci]"
+          commit_message: "Update podcast audio + feed [skip ci]"
           branch: ${{ github.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- Build Word transcript + HTML email body (outputs: SUBJECT, ATTACH_PATH, BODY_B64) ---
-      - name: Build transcript payload (DOCX + HTML)
-        id: transcript
+      # --- Build email HTML + DOCX + subject line from JSON ---
+      - name: Compose transcript payload
+        id: compose
+        shell: bash
         run: |
-          python scripts/build_transcript_payload.py
+          set -euo pipefail
+          python scripts/compose_transcript.py | tee compose.out
+          HTML_PATH="$(grep '^HTML_BODY=' compose.out | cut -d= -f2-)"
+          DOCX_PATH="$(grep '^DOCX_PATH=' compose.out | cut -d= -f2-)"
+          SUBJECT_LINE="$(grep '^SUBJECT_LINE=' compose.out | cut -d= -f2-)"
+          echo "html=${HTML_PATH}"     >> "$GITHUB_OUTPUT"
+          echo "docx=${DOCX_PATH}"     >> "$GITHUB_OUTPUT"
+          echo "subject=${SUBJECT_LINE}" >> "$GITHUB_OUTPUT"
 
-      # --- Send transcript email (DOCX attached; body mirrors DOCX paragraphs + superscripts) ---
-      - name: Email transcript (DOCX attached)
+      # --- Email the transcript (HTML body + DOCX attachment) ---
+      - name: Email transcript
         env:
           SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT:     ${{ secrets.SMTP_PORT }}        # e.g., 465 or 587
+          SMTP_PORT:     ${{ secrets.SMTP_PORT }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          EMAIL_FROM:    ${{ secrets.EMAIL_FROM }}       # e.g., "Kyle Deguire <you@example.com>"
-          EMAIL_TO:      ${{ secrets.EMAIL_TO }}         # one or more, comma-separated
-          SUBJECT:       ${{ steps.transcript.outputs.SUBJECT }}
-          ATTACH_PATH:   ${{ steps.transcript.outputs.ATTACH_PATH }}
-          BODY_B64:      ${{ steps.transcript.outputs.BODY_B64 }}
+          EMAIL_FROM:    ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO:      ${{ secrets.EMAIL_TO }}
+          SUBJECT:       ${{ steps.compose.outputs.subject }}
+          ATTACH_PATH:   ${{ steps.compose.outputs.docx }}
+        shell: bash
         run: |
-          python scripts/send_email.py
+          set -euo pipefail
+          BODY_B64="$(python - <<'PY' "${{ steps.compose.outputs.html }}"
+import base64, sys, pathlib
+p = pathlib.Path(sys.argv[1])
+print(base64.b64encode(p.read_bytes()).decode('utf-8'))
+PY
+)"
+          BODY_B64="$BODY_B64" python scripts/send_email.py
