@@ -7,7 +7,6 @@ from docx.oxml.ns import qn
 
 AUDIO_DIR = Path("audio")
 
-# Section headers to detect and bold
 SECTION_HEADERS = [
     "Introduction:",
     "New Products & Capabilities:",
@@ -29,14 +28,12 @@ def latest_json():
     return files[0] if files else None
 
 def parse_citations_for_html(text):
-    """Convert [1,2] to <sup>1, 2</sup>"""
     def add_spaces(match):
         nums = match.group(1).replace(',', ', ')
         return f'<sup>{nums}</sup>'
     return re.sub(r'\[(\d+(?:,\d+)*)\]', add_spaces, text)
 
 def parse_citations_for_docx(text):
-    """Split text into runs with citation markers separated"""
     parts = []
     last_end = 0
     for match in re.finditer(r'\[(\d+(?:,\d+)*)\]', text):
@@ -49,6 +46,10 @@ def parse_citations_for_docx(text):
         parts.append((text[last_end:], False))
     return parts
 
+def is_section_header(text):
+    """Check if text is exactly a section header"""
+    return text.strip() in SECTION_HEADERS
+
 def build_email_html(spoken, footnotes):
     parts = []
     parts.append('<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,Arial,sans-serif;font-size:15px;line-height:1.6;">')
@@ -59,14 +60,12 @@ def build_email_html(spoken, footnotes):
         if not para:
             continue
         
-        # Check if paragraph starts with a section header
-        is_header = any(para.startswith(h) for h in SECTION_HEADERS)
-        
-        para_html = parse_citations_for_html(para)
-        
-        if is_header:
-            parts.append(f'<p style="margin:0 0 18px 0;"><strong>{para_html}</strong></p>')
+        # Check if this paragraph is ONLY a header
+        if is_section_header(para):
+            parts.append(f'<p style="margin:0 0 8px 0;"><strong>{para}</strong></p>')
         else:
+            # Regular paragraph (might have citations)
+            para_html = parse_citations_for_html(para)
             parts.append(f'<p style="margin:0 0 18px 0;">{para_html}</p>')
     
     if footnotes:
@@ -105,20 +104,23 @@ def build_docx(docx_path, spoken, footnotes):
         if not para_text:
             continue
         
-        # Check if this is a section header
-        is_header = any(para_text.startswith(h) for h in SECTION_HEADERS)
-        
-        p = doc.add_paragraph()
-        parts = parse_citations_for_docx(para_text)
-        
-        for text, is_citation in parts:
-            r = p.add_run(text)
-            if is_header and not is_citation:
-                r.bold = True
-            if is_citation:
-                r.font.superscript = True
-        
-        apply_pfmt(p)
+        # Check if this is ONLY a section header
+        if is_section_header(para_text):
+            # Header paragraph - make it bold
+            p = doc.add_paragraph()
+            r = p.add_run(para_text)
+            r.bold = True
+            apply_pfmt(p)
+        else:
+            # Regular content paragraph - NO bold
+            p = doc.add_paragraph()
+            parts = parse_citations_for_docx(para_text)
+            for text, is_citation in parts:
+                r = p.add_run(text)
+                if is_citation:
+                    r.font.superscript = True
+                # DO NOT set bold here
+            apply_pfmt(p)
     
     if footnotes:
         p = doc.add_paragraph()
