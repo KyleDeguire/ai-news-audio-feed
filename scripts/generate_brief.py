@@ -6,11 +6,6 @@ Generates:
   - audio/ai_news_YYYYMMDD.mp3      (spoken script, no citations)
   - audio/ai_news_YYYYMMDD.json     (structured transcript with sources)
   - audio/ai_news_YYYYMMDD.txt      (plain-text transcript + Sources block)
-
-Secrets required (repo → Settings → Secrets and variables → Actions):
-  - OPENAI_API_KEY
-  - ELEVENLABS_API_KEY
-  - ELEVENLABS_VOICE_ID
 """
 
 import os
@@ -28,24 +23,19 @@ from openai import OpenAI
 
 AUDIO_DIR = Path("audio")
 
-# OpenAI model for drafting the brief
-MODEL_TEXT = "gpt-4o-mini"   # concise, reliable for JSON output
-TARGET_MIN = 4.5             # ~4–5 minutes
+MODEL_TEXT = "gpt-4o-mini"
+TARGET_MIN = 4.5
 
 # ElevenLabs TTS
-VOICE_NAME = "Hannah"        # fallback label if you ever map names → IDs
+VOICE_NAME = "Hannah"
 MODEL_TTS = "eleven_multilingual_v2"
 STABILITY = 0.3
 SIMILARITY = 0.8
 STYLE = 0.1
 SPEAKER_BOOST = True
 
-# Optional hard map if you prefer not to use env ELEVENLABS_VOICE_ID
-VOICE_ID_MAP = {
-    # "Hannah": "xxxxxxxxxxxxxxxxxxxxxxxx"
-}
+VOICE_ID_MAP = {}
 
-# Light context feeds (optional, model uses only if helpful)
 SOURCES = [
     "https://www.theverge.com/rss/index.xml",
     "https://feeds.feedburner.com/TechCrunch/artificial-intelligence",
@@ -90,19 +80,13 @@ def fail(msg: str):
 
 def openai_structured_brief(api_key: str, user_prompt: str) -> dict:
     """
-    Ask model to return STRICT JSON with:
+    Returns:
     {
       "sections": [
-        {
-          "title": "NEW PRODUCTS & CAPABILITIES",
-          "paragraphs": [
-            { "sentences": [ {"text": "...", "sources":[1,2]}, ... ] },
-            ...
-          ]
-        },
+        {"title": "NEW PRODUCTS & CAPABILITIES", "paragraphs": [{"text":"...", "sources":[1,2]}]},
         ...
       ],
-      "footnotes": [ {"id":1,"title":"...","url":"https://..."}, ... ]
+      "footnotes": [{"id":1, "title":"...", "url":"https://..."}]
     }
     """
     client = OpenAI(api_key=api_key)
@@ -111,43 +95,78 @@ def openai_structured_brief(api_key: str, user_prompt: str) -> dict:
         "You are a senior strategic AI analyst preparing a weekly 4–5 minute executive audio brief. "
         "Audience: executives, strategy consultants, AI adoption leads. "
         "Tone: professional, concise, specific, no hype. "
-        "Return a STRICT JSON object with keys 'sections' and 'footnotes'. "
-        "Sections MUST follow the 5-category outline below and include paragraphs→sentences. "
-        "Each sentence may include an optional 'sources' array of integer ids that map to footnotes. "
-        "DO NOT put URLs in sentences. Do not include citations in the spoken text."
+        "Return ONLY valid JSON. DO NOT include markdown code fences or any text outside the JSON object."
     )
 
-    outline = (
-        "Required sections in this exact order and titling:\n"
-        "1) NEW PRODUCTS & CAPABILITIES\n"
-        "2) STRATEGIC BUSINESS IMPACT\n"
-        "3) IMPLEMENTATION OPPORTUNITIES\n"
-        "4) MARKET DYNAMICS\n"
-        "5) TALENT MARKET SHIFTS\n"
-        "\n"
-        "For each section, provide 1–3 paragraphs. For each paragraph, provide 1–3 sentences.\n"
-        "Sentence object shape: {\"text\":\"...\", \"sources\":[1,3]} (sources optional).\n"
-        "footnotes is an array of {\"id\":<int>, \"title\":\"...\", \"url\":\"https://...\"}."
-    )
+    structure_spec = """
+CRITICAL: Your response must be a JSON object with this EXACT structure:
+
+{
+  "sections": [
+    {
+      "title": "NEW PRODUCTS & CAPABILITIES",
+      "paragraphs": [
+        {"text": "First paragraph text here.", "sources": [1, 2]},
+        {"text": "Second paragraph text here.", "sources": [3]}
+      ]
+    },
+    {
+      "title": "STRATEGIC BUSINESS IMPACT",
+      "paragraphs": [
+        {"text": "Paragraph text.", "sources": [1]}
+      ]
+    },
+    {
+      "title": "IMPLEMENTATION OPPORTUNITIES",
+      "paragraphs": [
+        {"text": "Paragraph text.", "sources": [2]}
+      ]
+    },
+    {
+      "title": "MARKET DYNAMICS",
+      "paragraphs": [
+        {"text": "Paragraph text.", "sources": []}
+      ]
+    },
+    {
+      "title": "TALENT MARKET SHIFTS",
+      "paragraphs": [
+        {"text": "Paragraph text.", "sources": [3]}
+      ]
+    }
+  ],
+  "footnotes": [
+    {"id": 1, "title": "Article Title", "url": "https://example.com/article"},
+    {"id": 2, "title": "Another Title", "url": "https://example.com/other"},
+    {"id": 3, "title": "Third Source", "url": "https://example.com/third"}
+  ]
+}
+
+Rules:
+- "sections" must be an ARRAY of objects
+- Each section object must have "title" (string) and "paragraphs" (array)
+- Each paragraph must be an object with "text" (string) and "sources" (array of integers)
+- Use 1-3 paragraphs per section
+- Keep sentences short (2-3 per paragraph)
+- "sources" array contains integer IDs matching footnotes
+- No URLs in paragraph text
+- "footnotes" is an array of objects with "id" (integer), "title" (string), "url" (string)
+"""
 
     headlines = fetch_headlines()
 
     user_msg = f"""
-Spoken brief must begin with:
-"Hello, here is your weekly update for {intro_date_str()}"
+Create a {int(TARGET_MIN*160)}-word executive brief for {intro_date_str()}.
 
-Length target: ~{int(TARGET_MIN*160)} words total across all sections.
+Start spoken content with: "Hello, here is your weekly update for {intro_date_str()}"
 
-Constraints:
-- No URLs or bracketed citations in sentences.
-- Keep sentences short and on-air friendly.
-- Use sources only via numeric ids in 'sources' per sentence.
-
-Optional recent headlines (use only if useful):
+Optional context (use if relevant):
 {headlines}
 
-Policy / operator guidance:
+Additional guidance:
 {user_prompt}
+
+Remember: Return ONLY the JSON object. No markdown, no code fences, no explanatory text.
 """.strip()
 
     resp = client.chat.completions.create(
@@ -155,93 +174,67 @@ Policy / operator guidance:
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": system_msg},
-            {"role": "user", "content": outline},
+            {"role": "user", "content": structure_spec},
             {"role": "user", "content": user_msg},
         ],
         temperature=0.4,
-        max_tokens=1800,
+        max_tokens=2000,
     )
 
     content = resp.choices[0].message.content.strip()
+    
     try:
         data = json.loads(content)
         if not isinstance(data, dict):
             raise ValueError("Top-level is not an object")
-        # Ensure required keys exist
-        data.setdefault("sections", [])
+        
+        # Validate structure
+        sections = data.get("sections")
+        if not isinstance(sections, list):
+            # Handle if OpenAI returned dict instead of array
+            if isinstance(sections, dict):
+                # Convert {"TITLE": [paragraphs]} to [{"title": "TITLE", "paragraphs": [...]}]
+                sections = [{"title": k, "paragraphs": v} for k, v in sections.items()]
+                data["sections"] = sections
+            else:
+                data["sections"] = []
+        
         data.setdefault("footnotes", [])
+        
         return data
-    except Exception:
-        # Very defensive fallback so the run never crashes
+        
+    except Exception as e:
+        print(f"ERROR parsing OpenAI response: {e}", file=sys.stderr)
+        print(f"Response content: {content[:500]}", file=sys.stderr)
         return {
-            "sections": [
-                {
-                    "title": "Brief",
-                    "paragraphs": [
-                        {"sentences": [{"text": content, "sources": []}]}
-                    ],
-                }
-            ],
+            "sections": [{"title": "Brief", "paragraphs": [{"text": content, "sources": []}]}],
             "footnotes": [],
         }
 
-# ========= Robust flattener for TTS =========
+# ========= Flattener for TTS =========
 
 def flatten_for_voice(sections):
-    """
-    Join all sentences into an on-air script. Robust to malformed structures:
-    - tolerates section/paragraph as str or dict
-    - ignores missing keys safely
-    """
+    """Join all paragraph texts into spoken script."""
     parts = [f"Hello, here is your weekly update for {intro_date_str()}"]
 
     for sec in sections:
-        # section can be dict or str
-        if isinstance(sec, str):
-            # if a stray title string slipped in, skip
-            continue
         if not isinstance(sec, dict):
             continue
-
+        
         paragraphs = sec.get("paragraphs", [])
-        if isinstance(paragraphs, str):
-            if paragraphs.strip():
-                parts.append(paragraphs.strip())
-            continue
-
         if not isinstance(paragraphs, list):
             continue
-
+        
         for para in paragraphs:
-            # paragraph can be dict or str
-            if isinstance(para, str):
-                if para.strip():
-                    parts.append(para.strip())
-                continue
-            if not isinstance(para, dict):
-                continue
-
-            sentences = para.get("sentences", [])
-            if isinstance(sentences, str):
-                if sentences.strip():
-                    parts.append(sentences.strip())
-                continue
-            if not isinstance(sentences, list):
-                continue
-
-            sent_texts = []
-            for s in sentences:
-                if isinstance(s, dict):
-                    t = (s.get("text") or "").strip()
-                    if t:
-                        sent_texts.append(t)
-                elif isinstance(s, str):
-                    if s.strip():
-                        sent_texts.append(s.strip())
-
-            if sent_texts:
-                parts.append(" ".join(sent_texts))
-
+            if isinstance(para, dict):
+                text = (para.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+            elif isinstance(para, str):
+                text = para.strip()
+                if text:
+                    parts.append(text)
+    
     return "\n\n".join(parts).strip()
 
 # ========= ElevenLabs TTS =========
@@ -271,7 +264,6 @@ def elevenlabs_tts(api_key: str, voice_id: str, text: str, out_mp3: Path):
 # ========= Main =========
 
 def main():
-    # Secrets
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         fail("Missing OPENAI_API_KEY in env.")
@@ -286,24 +278,20 @@ def main():
     if not voice_id:
         fail("No ELEVENLABS_VOICE_ID provided.")
 
-    # Operator brief spec (kept short, you can extend any week)
     brief_spec = (
         "Create a weekly AI executive briefing for operators. "
         "Keep the signal high, specific, and immediately useful. "
         "Avoid filler and speculation. Do not read source attributions on air."
     )
 
-    # Call OpenAI for structured JSON
     data = openai_structured_brief(api_key, brief_spec)
     sections = data.get("sections", [])
     footnotes = data.get("footnotes", [])
 
-    # Build spoken script (no citations)
     spoken = flatten_for_voice(sections)
     if not spoken:
         fail("Empty spoken script after flattening.")
 
-    # Ensure out dir
     AUDIO_DIR.mkdir(exist_ok=True)
 
     base = f"ai_news_{stamp_today()}"
@@ -311,13 +299,10 @@ def main():
     json_path = AUDIO_DIR / f"{base}.json"
     txt_path  = AUDIO_DIR / f"{base}.txt"
 
-    # TTS
     elevenlabs_tts(el_key, voice_id, spoken, mp3_path)
 
-    # Save JSON (full structure)
     json_path.write_text(json.dumps({"sections": sections, "footnotes": footnotes}, indent=2), encoding="utf-8")
 
-    # Plain-text transcript (paragraph blocks + Sources)
     lines = [spoken]
     if footnotes:
         lines.append("")
