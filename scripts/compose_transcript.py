@@ -24,10 +24,11 @@ def latest_json():
 
 def flatten_paragraph(para_obj):
     """
-    Handle both old and new formats:
-    - New: {"sentences": [{"text":"...", "sources":[1,2]}, ...]}
-    - Old: {"text": "...", "sources": [1,2]} OR just "string"
-    Returns: (combined_text, all_sources_list)
+    Handle multiple formats:
+    - {"text": "...", "sources": [1,2]}
+    - {"sentences": [{"text":"...", "sources":[]}]}
+    - "plain string"
+    Returns: (text, sources_list)
     """
     if isinstance(para_obj, str):
         return para_obj.strip(), []
@@ -35,7 +36,7 @@ def flatten_paragraph(para_obj):
     if not isinstance(para_obj, dict):
         return "", []
     
-    # New format: has "sentences" array
+    # Format 1: {"sentences": [...]}
     if "sentences" in para_obj:
         sentences = para_obj.get("sentences", [])
         if not isinstance(sentences, list):
@@ -60,7 +61,7 @@ def flatten_paragraph(para_obj):
         unique_sources = sorted(set(all_sources))
         return combined, unique_sources
     
-    # Old format: direct {"text": "...", "sources": [...]}
+    # Format 2: {"text": "...", "sources": [...]}
     text = (para_obj.get("text") or "").strip()
     srcs = para_obj.get("sources") or []
     try:
@@ -72,25 +73,37 @@ def flatten_paragraph(para_obj):
 def normalize_sections(data: Dict[str, Any]) -> (List[Dict[str, Any]], List[Dict[str, Any]]):
     """
     Returns (sections, footnotes).
+    Handles both array and dict formats for sections.
     """
     footnotes = data.get("footnotes") or []
     sections = data.get("sections")
 
-    if not sections:
-        spoken = (data.get("spoken") or "").strip()
-        paras = [p.strip() for p in re.split(r"\n\s*\n", spoken) if p.strip()]
-        sections = [{"title": "", "paragraphs": paras}]
+    # Handle dict-style sections: {"TITLE": [paragraphs], ...}
+    if isinstance(sections, dict):
+        normalized = []
+        for title, paras in sections.items():
+            if not isinstance(paras, list):
+                paras = []
+            normalized.append({"title": title, "paragraphs": paras})
+        return normalized, footnotes
 
-    normalized = []
-    for sec in sections:
-        if isinstance(sec, dict):
-            title = (sec.get("title") or "").strip()
-            paras = sec.get("paragraphs") or []
-        else:
-            title = str(sec).strip()
-            paras = []
-        normalized.append({"title": title, "paragraphs": paras})
-    return normalized, footnotes
+    # Handle array-style sections: [{"title": "...", "paragraphs": [...]}, ...]
+    if isinstance(sections, list):
+        normalized = []
+        for sec in sections:
+            if isinstance(sec, dict):
+                title = (sec.get("title") or "").strip()
+                paras = sec.get("paragraphs") or []
+            else:
+                title = str(sec).strip()
+                paras = []
+            normalized.append({"title": title, "paragraphs": paras})
+        return normalized, footnotes
+
+    # Fallback: no sections, try spoken text
+    spoken = (data.get("spoken") or "").strip()
+    paras = [p.strip() for p in re.split(r"\n\s*\n", spoken) if p.strip()]
+    return [{"title": "", "paragraphs": paras}], footnotes
 
 # ---------- HTML / DOCX builders ----------
 def build_email_html(sections, footnotes):
