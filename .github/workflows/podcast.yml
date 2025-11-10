@@ -2,8 +2,13 @@ name: Weekly AI Executive Brief
 
 on:
   schedule:
-    - cron: '0 15 * * 1' # Mondays at 08:00 AM Mountain (15:00 UTC)
+    - cron: '0 15 * * 1'   # Mondays at 08:00 AM Mountain (15:00 UTC)
   workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why are you running this manually?'
+        required: false
+        default: 'manual-run'
 
 permissions:
   contents: write
@@ -28,48 +33,35 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Generate MP3 + JSON (sentences + footnotes) ---
-      - name: Generate MP3 + JSON transcript
+      # 1) Generate MP3 + transcript JSON/TXT
+      - name: Generate MP3 + transcript JSON/TXT
         env:
-          OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
-          ELEVENLABS_API_KEY:  ${{ secrets.ELEVENLABS_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         shell: bash
         run: |
           set -euo pipefail
           python scripts/generate_brief.py
+          ls -lah audio | tail -n +1
 
-      # --- Update RSS feed to latest MP3 ---
-      - name: Update feed.xml (point enclosure to latest mp3)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/update_feed.py
-
-      # --- Commit audio + feed changes ---
-      - name: Commit audio + feed
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Update podcast audio + feed [skip ci]"
-          branch: ${{ github.ref }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      # --- Build email HTML + DOCX + subject line from JSON ---
-      - name: Compose transcript payload
+      # 2) Build email HTML + Word docx + subject (reads latest JSON)
+      - name: Compose email HTML + DOCX + subject
         id: compose
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/compose_transcript.py | tee compose.out
-          HTML_PATH="$(grep '^HTML_BODY=' compose.out | cut -d= -f2-)"
-          DOCX_PATH="$(grep '^DOCX_PATH=' compose.out | cut -d= -f2-)"
-          SUBJECT_LINE="$(grep '^SUBJECT_LINE=' compose.out | cut -d= -f2-)"
-          echo "html=${HTML_PATH}"     >> "$GITHUB_OUTPUT"
-          echo "docx=${DOCX_PATH}"     >> "$GITHUB_OUTPUT"
-          echo "subject=${SUBJECT_LINE}" >> "$GITHUB_OUTPUT"
+          python scripts/compose_transcript.py | tee compose.log
+          HTML_BODY=$(grep -E '^HTML_BODY=' compose.log | cut -d= -f2-)
+          DOCX_PATH=$(grep -E '^DOCX_PATH=' compose.log | cut -d= -f2-)
+          SUBJECT_LINE=$(grep -E '^SUBJECT_LINE=' compose.log | cut -d= -f2-)
+          echo "html_body=$HTML_BODY" >> $GITHUB_OUTPUT
+          echo "docx_path=$DOCX_PATH" >> $GITHUB_OUTPUT
+          echo "subject_line=$SUBJECT_LINE" >> $GITHUB_OUTPUT
+          echo "Prepared -> $HTML_BODY ; $DOCX_PATH ; $SUBJECT_LINE"
 
-      # --- Email the transcript (HTML body + DOCX attachment) ---
-      - name: Email transcript
+      # 3) Send email (HTML body + .docx attached)
+      - name: Send transcript email
         env:
           SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
           SMTP_PORT:     ${{ secrets.SMTP_PORT }}
@@ -77,15 +69,29 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_FROM:    ${{ secrets.EMAIL_FROM }}
           EMAIL_TO:      ${{ secrets.EMAIL_TO }}
-          SUBJECT:       ${{ steps.compose.outputs.subject }}
-          ATTACH_PATH:   ${{ steps.compose.outputs.docx }}
+          SUBJECT:       ${{ steps.compose.outputs.subject_line }}
+          ATTACH_PATH:   ${{ steps.compose.outputs.docx_path }}
         shell: bash
         run: |
           set -euo pipefail
-          BODY_B64="$(python - <<'PY' "${{ steps.compose.outputs.html }}"
-import base64, sys, pathlib
-p = pathlib.Path(sys.argv[1])
-print(base64.b64encode(p.read_bytes()).decode('utf-8'))
-PY
-)"
-          BODY_B64="$BODY_B64" python scripts/send_email.py
+          BODY_B64=$(base64 -w 0 "${{ steps.compose.outputs.html_body }}")
+          export BODY_B64
+          python scripts/send_email.py
+
+      # 4) Update RSS feed to newest MP3
+      - name: Update feed.xml (point enclosure to latest mp3)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/update_feed.py
+
+      # 5) Commit audio + feed + generated artifacts
+      - name: Commit audio, feed, and transcript assets
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update podcast assets (audio/feed/transcript) [skip ci]"
+          file_pattern: |
+            audio/*
+            feed.xml
+          branch: ${{ github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
