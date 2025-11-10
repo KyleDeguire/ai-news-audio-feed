@@ -15,7 +15,6 @@ def denver_date_today():
     return dt.datetime.now(tz).date()
 
 def short_date_for_subject(d):
-    # e.g., 09 Nov 25
     return d.strftime("%d %b %y")
 
 def latest_json():
@@ -23,46 +22,71 @@ def latest_json():
                    key=lambda p: p.stat().st_mtime, reverse=True)
     return files[0] if files else None
 
-def as_para_and_sources(para_obj) -> (str, List[int]):
+def flatten_paragraph(para_obj):
     """
-    Accept both:
-      - dict: {"text": "...", "sources": [1,2]}
-      - str:  "..."
+    Handle both old and new formats:
+    - New: {"sentences": [{"text":"...", "sources":[1,2]}, ...]}
+    - Old: {"text": "...", "sources": [1,2]} OR just "string"
+    Returns: (combined_text, all_sources_list)
     """
-    if isinstance(para_obj, dict):
-        text = (para_obj.get("text") or "").strip()
-        srcs = para_obj.get("sources") or []
-        # coerce numeric-ish
-        try:
-            srcs = [int(x) for x in srcs]
-        except Exception:
-            srcs = []
-        return text, srcs
-    else:
-        return (str(para_obj or "").strip(), [])
+    if isinstance(para_obj, str):
+        return para_obj.strip(), []
+    
+    if not isinstance(para_obj, dict):
+        return "", []
+    
+    # New format: has "sentences" array
+    if "sentences" in para_obj:
+        sentences = para_obj.get("sentences", [])
+        if not isinstance(sentences, list):
+            return "", []
+        
+        all_text = []
+        all_sources = []
+        for sent in sentences:
+            if isinstance(sent, dict):
+                txt = (sent.get("text") or "").strip()
+                srcs = sent.get("sources") or []
+                if txt:
+                    all_text.append(txt)
+                if srcs:
+                    all_sources.extend([int(x) for x in srcs if str(x).isdigit()])
+            elif isinstance(sent, str):
+                txt = sent.strip()
+                if txt:
+                    all_text.append(txt)
+        
+        combined = " ".join(all_text)
+        unique_sources = sorted(set(all_sources))
+        return combined, unique_sources
+    
+    # Old format: direct {"text": "...", "sources": [...]}
+    text = (para_obj.get("text") or "").strip()
+    srcs = para_obj.get("sources") or []
+    try:
+        srcs = [int(x) for x in srcs if str(x).isdigit()]
+    except:
+        srcs = []
+    return text, srcs
 
 def normalize_sections(data: Dict[str, Any]) -> (List[Dict[str, Any]], List[Dict[str, Any]]):
     """
     Returns (sections, footnotes).
-    Each section: {"title": str, "paragraphs": [ str | {"text": str, "sources":[ints]} ]}
     """
     footnotes = data.get("footnotes") or []
     sections = data.get("sections")
 
-    # If we only have a flat spoken transcript, fall back to splitting on blank lines.
     if not sections:
         spoken = (data.get("spoken") or "").strip()
         paras = [p.strip() for p in re.split(r"\n\s*\n", spoken) if p.strip()]
         sections = [{"title": "", "paragraphs": paras}]
 
-    # Ensure each section has title and paragraphs list
     normalized = []
     for sec in sections:
         if isinstance(sec, dict):
             title = (sec.get("title") or "").strip()
             paras = sec.get("paragraphs") or []
         else:
-            # Rare/defensive: section was a string title with no paragraphs
             title = str(sec).strip()
             paras = []
         normalized.append({"title": title, "paragraphs": paras})
@@ -77,8 +101,9 @@ def build_email_html(sections, footnotes):
         title = (sec.get("title") or "").strip()
         if title:
             parts.append(f'<p style="margin:0 0 8px 0;"><strong>{title}</strong></p>')
+        
         for para_obj in sec.get("paragraphs", []):
-            text, srcs = as_para_and_sources(para_obj)
+            text, srcs = flatten_paragraph(para_obj)
             if not text:
                 continue
             sup = f"<sup>{','.join(str(i) for i in srcs)}</sup>" if srcs else ""
@@ -106,19 +131,16 @@ def build_email_html(sections, footnotes):
 
 def build_docx(docx_path: Path, sections, footnotes):
     doc = Document()
-    # Normal style
     base = doc.styles['Normal']
     base.font.name = 'Calibri'
     base._element.rPr.rFonts.set(qn('w:eastAsia'), 'Calibri')
     base.font.size = Pt(11)
 
-    # Paragraph spacing
     def apply_pfmt(p):
         pf = p.paragraph_format
         pf.space_after = Pt(18)
         pf.line_spacing = 1.2
 
-    # Body
     for sec in sections:
         title = (sec.get("title") or "").strip()
         if title:
@@ -126,8 +148,9 @@ def build_docx(docx_path: Path, sections, footnotes):
             r = ptitle.add_run(title)
             r.bold = True
             apply_pfmt(ptitle)
+        
         for para_obj in sec.get("paragraphs", []):
-            text, srcs = as_para_and_sources(para_obj)
+            text, srcs = flatten_paragraph(para_obj)
             if not text:
                 continue
             p = doc.add_paragraph()
@@ -137,7 +160,6 @@ def build_docx(docx_path: Path, sections, footnotes):
                 r2.font.superscript = True
             apply_pfmt(p)
 
-    # Sources
     if footnotes:
         p = doc.add_paragraph()
         r = p.add_run("Sources")
@@ -166,7 +188,6 @@ def main():
     today = denver_date_today()
     subject = f"AI Exec Brief (transcript) - {short_date_for_subject(today)}"
 
-    # Output locations
     out_base = f"AI Exec Brief (transcript) - {short_date_for_subject(today)}"
     html_path = AUDIO_DIR / (out_base + ".html")
     docx_path = AUDIO_DIR / (out_base + ".docx")
@@ -175,7 +196,6 @@ def main():
     html_path.write_text(html, encoding="utf-8")
     build_docx(docx_path, sections, footnotes)
 
-    # Emit for GitHub Actions (both print and GITHUB_OUTPUT)
     lines = [
         f"HTML_BODY={html_path}",
         f"DOCX_PATH={docx_path}",
