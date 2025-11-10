@@ -1,5 +1,4 @@
 name: Weekly AI Executive Brief
-
 on:
   schedule:
     - cron: '0 15 * * 1'   # Mondays at 08:00 AM Mountain (15:00 UTC)
@@ -9,30 +8,24 @@ on:
         description: 'Why are you running this manually?'
         required: false
         default: 'manual-run'
-
 permissions:
   contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-
       - name: Install deps
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
       # 1) Generate MP3 + transcript JSON/TXT
       - name: Generate MP3 + transcript JSON/TXT
         env:
@@ -44,7 +37,36 @@ jobs:
           set -euo pipefail
           python scripts/generate_brief.py
           ls -lah audio | tail -n +1
-
+      
+      # DEBUG: Show JSON structure
+      - name: DEBUG - Show JSON content
+        shell: bash
+        run: |
+          echo "=== Latest JSON file ==="
+          ls -lt audio/ai_news_*.json | head -1
+          echo ""
+          echo "=== First 80 lines of JSON content ==="
+          cat $(ls -t audio/ai_news_*.json | head -1) | head -80
+          echo ""
+          echo "=== Structure check ==="
+          python3 -c "
+          import json
+          from pathlib import Path
+          jfile = sorted(Path('audio').glob('ai_news_*.json'), key=lambda p: p.stat().st_mtime)[-1]
+          data = json.loads(jfile.read_text())
+          print(f'Keys in JSON: {list(data.keys())}')
+          print(f'Number of sections: {len(data.get(\"sections\", []))}')
+          if data.get('sections'):
+              sec = data['sections'][0]
+              print(f'First section keys: {list(sec.keys()) if isinstance(sec, dict) else \"NOT A DICT\"}')
+              if isinstance(sec, dict) and sec.get('paragraphs'):
+                  para = sec['paragraphs'][0]
+                  print(f'First paragraph type: {type(para).__name__}')
+                  if isinstance(para, dict):
+                      print(f'First paragraph keys: {list(para.keys())}')
+          print(f'Number of footnotes: {len(data.get(\"footnotes\", []))}')
+          "
+      
       # 2) Build email HTML + Word docx + subject (reads latest JSON)
       - name: Compose email HTML + DOCX + subject
         id: compose
@@ -59,7 +81,6 @@ jobs:
           echo "docx_path=$DOCX_PATH" >> $GITHUB_OUTPUT
           echo "subject_line=$SUBJECT_LINE" >> $GITHUB_OUTPUT
           echo "Prepared -> $HTML_BODY ; $DOCX_PATH ; $SUBJECT_LINE"
-
       # 3) Send email (HTML body + .docx attached)
       - name: Send transcript email
         env:
@@ -77,14 +98,12 @@ jobs:
           BODY_B64=$(base64 -w 0 "${{ steps.compose.outputs.html_body }}")
           export BODY_B64
           python scripts/send_email.py
-
       # 4) Update RSS feed to newest MP3
       - name: Update feed.xml (point enclosure to latest mp3)
         shell: bash
         run: |
           set -euo pipefail
           python scripts/update_feed.py
-
       # 5) Commit audio + feed + generated artifacts
       - name: Commit audio, feed, and transcript assets
         uses: stefanzweifel/git-auto-commit-action@v5
