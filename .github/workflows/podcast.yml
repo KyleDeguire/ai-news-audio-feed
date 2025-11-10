@@ -28,7 +28,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # --- Generate audio + transcript ---
+      # --- Generate audio + transcript (.txt in /audio) ---
       - name: Generate MP3 + transcript
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -52,4 +52,25 @@ jobs:
         with:
           commit_message: "Update podcast feed [skip ci]"
           branch: ${{ github.ref }}
-          token: ${{ secrets.GITHUB_TOKEN }} # Explicitly add this token
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- Build Word transcript + HTML email body (outputs: SUBJECT, ATTACH_PATH, BODY_B64) ---
+      - name: Build transcript payload (DOCX + HTML)
+        id: transcript
+        run: |
+          python scripts/build_transcript_payload.py
+
+      # --- Send transcript email (DOCX attached; body mirrors DOCX paragraphs + superscripts) ---
+      - name: Email transcript (DOCX attached)
+        env:
+          SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT:     ${{ secrets.SMTP_PORT }}        # e.g., 465 or 587
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM:    ${{ secrets.EMAIL_FROM }}       # e.g., "Kyle Deguire <you@example.com>"
+          EMAIL_TO:      ${{ secrets.EMAIL_TO }}         # one or more, comma-separated
+          SUBJECT:       ${{ steps.transcript.outputs.SUBJECT }}
+          ATTACH_PATH:   ${{ steps.transcript.outputs.ATTACH_PATH }}
+          BODY_B64:      ${{ steps.transcript.outputs.BODY_B64 }}
+        run: |
+          python scripts/send_email.py
