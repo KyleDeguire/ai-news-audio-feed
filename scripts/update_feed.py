@@ -1,154 +1,146 @@
 #!/usr/bin/env python3
-# scripts/update_feed.py
-# Appends a new <item> to feed.xml for the latest MP3 (idempotent: will not duplicate an existing guid)
-import os
-import sys
-import glob
-import time
-import datetime
+import os, sys, time, datetime, re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-# CONFIG: adjust only if you host the feed at a different base URL
+
 BASE_URL = os.environ.get("PAGE_BASE_URL", "https://kyledeguire.github.io/ai-news-audio-feed")
 FEED_PATH = Path("feed.xml")
 AUDIO_DIR = Path("audio")
+
 def rfc2822_now_gmt():
-    now = datetime.datetime.utcnow()
-    return now.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    return datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+
 def denver_date_today():
-    """Get current date in Mountain Time"""
     import pytz
-    mountain_tz = pytz.timezone('America/Denver')
-    now_mountain = datetime.datetime.now(mountain_tz)
-    return now_mountain.date()
+    return datetime.datetime.now(pytz.timezone('America/Denver')).date()
+
 def load_stamp():
-    """Find the MP3 file for today's date"""
-    today = denver_date_today()
-    today_stamp = today.strftime("%Y%m%d")
-    # Look for today's file first
-    today_pattern = AUDIO_DIR / f"ai_news_{today_stamp}.mp3"
-    if today_pattern.exists():
-        print(f"Found today's MP3: {today_pattern.name} with stamp: {today_stamp}")
-        return today_stamp
-    # Fallback: find the newest MP3 file
-    mp3s = sorted(AUDIO_DIR.glob("ai_news_*.mp3"), key=os.path.getmtime, reverse=True)
+    today = denver_date_today().strftime("%Y%m%d")
+    today_mp3 = AUDIO_DIR / f"ai_news_{today}.mp3"
+    if today_mp3.exists():
+        print(f"Found today's MP3: {today_mp3.name}")
+        return today
+    
+    mp3s = sorted(AUDIO_DIR.glob("ai_news_*.mp3"), key=lambda p: p.stat().st_mtime, reverse=True)
     if mp3s:
-        name = mp3s[0].stem  # e.g. ai_news_20250916
-        # Extract the 8-digit date from filename
-        import re
-        m = re.search(r"(\d{8})$", name)
+        m = re.search(r"(\d{8})$", mp3s[0].stem)
         if m:
-            print(f"Found newest MP3: {mp3s[0].name} with stamp: {m.group(1)}")
+            print(f"Found newest MP3: {mp3s[0].name}")
             return m.group(1)
-    print("No ai_news_*.mp3 files found")
+    
+    print("No MP3 files found", file=sys.stderr)
     return None
+
 def nice_title_from_stamp(stamp):
     try:
-        d = datetime.datetime.strptime(stamp, "%Y%m%d")
-        return d.strftime("AI Executive Brief - %d %b, %Y")
-    except Exception:
+        return datetime.datetime.strptime(stamp, "%Y%m%d").strftime("AI Executive Brief - %d %b, %Y")
+    except:
         return f"AI Executive Brief - {stamp}"
+
 def pretty_pubdate_from_stamp(stamp):
     try:
-        d = datetime.datetime.strptime(stamp, "%Ym%d")
-        return d.strftime("%a, %d %b %Y %H:%M:%S GMT")
-    except Exception:
+        # FIX: Was "%Ym%d", now "%Y%m%d"
+        return datetime.datetime.strptime(stamp, "%Y%m%d").strftime("%a, %d %b %Y 08:00:00 GMT")
+    except:
         return rfc2822_now_gmt()
+
 def find_latest_mp3_by_stamp(stamp):
     if stamp:
-        candidates = list(AUDIO_DIR.glob(f"*{stamp}*.mp3"))
-        if candidates:
-            return sorted(candidates, key=os.path.getmtime, reverse=True)[0]
-    # fallback: newest ai_news mp3
-    mp3s = sorted(AUDIO_DIR.glob("ai_news_*.mp3"), key=os.path.getmtime, reverse=True)
+        mp3_path = AUDIO_DIR / f"ai_news_{stamp}.mp3"
+        if mp3_path.exists():
+            return mp3_path
+    
+    mp3s = sorted(AUDIO_DIR.glob("ai_news_*.mp3"), key=lambda p: p.stat().st_mtime, reverse=True)
     return mp3s[0] if mp3s else None
-def register_namespaces():
-    ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
+
 def ensure_feed_exists():
     if not FEED_PATH.exists():
-        # Create minimal feed if none exists
-        rss = ET.Element("rss", {"version": "2.0"})
-        rss.set("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
+        rss = ET.Element("rss", {"version": "2.0", "xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd"})
         channel = ET.SubElement(rss, "channel")
         ET.SubElement(channel, "title").text = "AI News Weekly -- Executive Briefing"
         ET.SubElement(channel, "description").text = "Weekly AI news analysis and strategic insights for business leaders"
         ET.SubElement(channel, "link").text = f"{BASE_URL}/"
         ET.SubElement(channel, "language").text = "en-us"
-        tree = ET.ElementTree(rss)
-        tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
+        ET.ElementTree(rss).write(FEED_PATH, xml_declaration=True, encoding="utf-8")
+
 def main():
-    register_namespaces()
+    ET.register_namespace("itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
     ensure_feed_exists()
+    
     stamp = load_stamp()
     if not stamp:
-        print("ERROR: No audio files found to process.", file=sys.stderr)
         sys.exit(1)
+    
     mp3_path = find_latest_mp3_by_stamp(stamp)
     if not mp3_path or not mp3_path.exists():
-        print(f"ERROR: No MP3 found for stamp: {stamp}", file=sys.stderr)
+        print(f"ERROR: No MP3 found for {stamp}", file=sys.stderr)
         sys.exit(1)
-    # CRITICAL: Get the actual file size with error handling
-    try:
-        actual_file_size = mp3_path.stat().st_size
-        print(f"File {mp3_path.name} has size: {actual_file_size} bytes")
-        if actual_file_size == 0:
-            print(f"ERROR: File {mp3_path.name} is empty (0 bytes)", file=sys.stderr)
-            sys.exit(1)
-    except Exception as e:
-        print(f"ERROR: Cannot get file size for {mp3_path.name}: {e}", file=sys.stderr)
+    
+    file_size = mp3_path.stat().st_size
+    if file_size == 0:
+        print(f"ERROR: MP3 is empty", file=sys.stderr)
         sys.exit(1)
-    mp3_basename = mp3_path.name
-    mp3_url = f"{BASE_URL}/audio/{mp3_basename}?t={int(time.time())}"
-    mp3_size = str(actual_file_size)
-    # guid derive (unique per new episode)
-    guid_text = mp3_basename.replace(".mp3", "")
-    print(f"Processing: {mp3_basename} with GUID: {guid_text}, Size: {mp3_size} bytes")
-    # parse feed
+    
+    print(f"Processing: {mp3_path.name} ({file_size} bytes)")
+    
+    mp3_url = f"{BASE_URL}/audio/{mp3_path.name}?t={int(time.time())}"
+    guid_text = mp3_path.stem
+    
     tree = ET.parse(FEED_PATH)
     root = tree.getroot()
-    # find channel
     channel = root.find("channel")
+    
     if channel is None:
-        print("ERROR: feed.xml missing <channel>", file=sys.stderr)
+        print("ERROR: Missing <channel>", file=sys.stderr)
         sys.exit(1)
-    # The fix: remove the check for existing guids.
-    # We will always insert the newest item at the top.
-    print(f"Adding new episode with GUID: {guid_text}")
-    # Construct new item
+    
+    # Check if episode already exists
+    for existing_item in channel.findall("item"):
+        existing_guid = existing_item.find("guid")
+        if existing_guid is not None and existing_guid.text == guid_text:
+            print(f"Episode {guid_text} already exists in feed, skipping")
+            sys.exit(0)
+    
+    print(f"Adding new episode: {guid_text}")
+    
+    # Build new item
     item = ET.Element("item")
-    title = ET.SubElement(item, "title")
-    title.text = nice_title_from_stamp(stamp)
-    desc = ET.SubElement(item, "description")
-    desc.text = "Executive Briefing: AI Market Trends and Strategic Insights"
-    link = ET.SubElement(item, "link")
-    link.text = f"{BASE_URL}/"
+    ET.SubElement(item, "title").text = nice_title_from_stamp(stamp)
+    ET.SubElement(item, "description").text = "Executive Briefing: AI Market Trends and Strategic Insights"
+    ET.SubElement(item, "link").text = f"{BASE_URL}/"
+    
     enclosure = ET.SubElement(item, "enclosure")
     enclosure.set("url", mp3_url)
-    enclosure.set("length", mp3_size)
+    enclosure.set("length", str(file_size))
     enclosure.set("type", "audio/mpeg")
-    pubDate = ET.SubElement(item, "pubDate")
-    pubDate.text = pretty_pubdate_from_stamp(stamp)
+    
+    ET.SubElement(item, "pubDate").text = pretty_pubdate_from_stamp(stamp)
+    
     guid = ET.SubElement(item, "guid")
     guid.text = guid_text
     guid.set("isPermaLink", "false")
-    # iTunes episode metadata
+    
     ET.SubElement(item, "itunes:explicit").text = "false"
     ET.SubElement(item, "itunes:episodeType").text = "full"
-    # Insert the new item at the top (newest first)
+    
+    # Insert at top
     first_item = channel.find("item")
     if first_item is not None:
         channel.insert(list(channel).index(first_item), item)
     else:
         channel.append(item)
-    # update lastBuildDate
-    last = channel.find("lastBuildDate")
-    if last is None:
-        last = ET.SubElement(channel, "lastBuildDate")
-    last.text = rfc2822_now_gmt()
-    # write back with proper formatting
+    
+    # Update lastBuildDate
+    last_build = channel.find("lastBuildDate")
+    if last_build is None:
+        last_build = ET.SubElement(channel, "lastBuildDate")
+    last_build.text = rfc2822_now_gmt()
+    
     ET.indent(tree, space="  ")
     tree.write(FEED_PATH, xml_declaration=True, encoding="utf-8")
-    print(f"Successfully added new episode: {mp3_basename} ({mp3_size} bytes)")
-    sys.exit(0)
+    
+    print(f"✓ Added episode: {mp3_path.name} ({file_size} bytes)")
+    print(f"✓ Feed updated: {FEED_PATH}")
+
 if __name__ == "__main__":
     main()
