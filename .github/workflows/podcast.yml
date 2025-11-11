@@ -106,8 +106,18 @@ jobs:
           echo "=== Last build date ==="
           grep "lastBuildDate" feed.xml
           echo ""
-          echo "=== First item (should be Nov 10) ==="
+          echo "=== First item (should be today's date) ==="
           grep -A 15 "<item>" feed.xml | head -16
+      
+      - name: Stage all changes explicitly
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add feed.xml
+          git add audio/*
+          echo "=== Git status after staging ==="
+          git status
       
       - name: Commit audio, feed, and transcript assets
         uses: stefanzweifel/git-auto-commit-action@v5
@@ -117,3 +127,4 @@ jobs:
             audio/*
             feed.xml
           branch: ${{ github.ref }}
+          skip_dirty_check: true
