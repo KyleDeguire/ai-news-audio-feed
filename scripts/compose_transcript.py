@@ -46,9 +46,13 @@ def parse_citations_for_docx(text):
         parts.append((text[last_end:], False))
     return parts
 
-def is_section_header(text):
-    """Check if text is exactly a section header"""
-    return text.strip() in SECTION_HEADERS
+def split_on_header(para_text):
+    """If paragraph starts with a header, split it into (header, content)"""
+    for header in SECTION_HEADERS:
+        if para_text.startswith(header):
+            content = para_text[len(header):].strip()
+            return header, content
+    return None, para_text
 
 def build_email_html(spoken, footnotes):
     parts = []
@@ -60,11 +64,17 @@ def build_email_html(spoken, footnotes):
         if not para:
             continue
         
-        # Check if this paragraph is ONLY a header
-        if is_section_header(para):
-            parts.append(f'<p style="margin:0 0 8px 0;"><strong>{para}</strong></p>')
+        header, content = split_on_header(para)
+        
+        if header:
+            # Header found - output it bold on its own line
+            parts.append(f'<p style="margin:0 0 8px 0;"><strong>{header}</strong></p>')
+            if content:
+                # Content on next line
+                content_html = parse_citations_for_html(content)
+                parts.append(f'<p style="margin:0 0 18px 0;">{content_html}</p>')
         else:
-            # Regular paragraph (might have citations)
+            # No header - regular paragraph
             para_html = parse_citations_for_html(para)
             parts.append(f'<p style="margin:0 0 18px 0;">{para_html}</p>')
     
@@ -104,22 +114,34 @@ def build_docx(docx_path, spoken, footnotes):
         if not para_text:
             continue
         
-        # Check if this is ONLY a section header
-        if is_section_header(para_text):
-            # Header paragraph - make it bold
-            p = doc.add_paragraph()
-            r = p.add_run(para_text)
+        header, content = split_on_header(para_text)
+        
+        if header:
+            # Create bold header paragraph
+            p_header = doc.add_paragraph()
+            r = p_header.add_run(header)
             r.bold = True
-            apply_pfmt(p)
+            apply_pfmt(p_header)
+            
+            if content:
+                # Create normal content paragraph
+                p_content = doc.add_paragraph()
+                parts = parse_citations_for_docx(content)
+                for text, is_citation in parts:
+                    r = p_content.add_run(text)
+                    if is_citation:
+                        r.font.superscript = True
+                    # DON'T set bold
+                apply_pfmt(p_content)
         else:
-            # Regular content paragraph - NO bold
+            # Regular paragraph - no bold
             p = doc.add_paragraph()
             parts = parse_citations_for_docx(para_text)
             for text, is_citation in parts:
                 r = p.add_run(text)
                 if is_citation:
                     r.font.superscript = True
-                # DO NOT set bold here
+                # DON'T set bold
             apply_pfmt(p)
     
     if footnotes:
