@@ -108,6 +108,11 @@ def build_docx(docx_path, spoken, footnotes):
         pf.space_after = Pt(18)
         pf.line_spacing = 1.2
     
+    def apply_header_fmt(p):
+        pf = p.paragraph_format
+        pf.space_after = Pt(6)
+        pf.line_spacing = 1.2
+    
     paragraphs = [p.strip() for p in spoken.split('\n\n') if p.strip()]
     
     for para_text in paragraphs:
@@ -117,31 +122,29 @@ def build_docx(docx_path, spoken, footnotes):
         header, content = split_on_header(para_text)
         
         if header:
-            # Create bold header paragraph
+            # Create bold header paragraph with 6pt spacing
             p_header = doc.add_paragraph()
             r = p_header.add_run(header)
             r.bold = True
-            apply_pfmt(p_header)
+            apply_header_fmt(p_header)
             
             if content:
-                # Create normal content paragraph
+                # Create normal content paragraph with 18pt spacing
                 p_content = doc.add_paragraph()
                 parts = parse_citations_for_docx(content)
                 for text, is_citation in parts:
                     r = p_content.add_run(text)
                     if is_citation:
                         r.font.superscript = True
-                    # DON'T set bold
                 apply_pfmt(p_content)
         else:
-            # Regular paragraph - no bold
+            # Regular paragraph - 18pt spacing
             p = doc.add_paragraph()
             parts = parse_citations_for_docx(para_text)
             for text, is_citation in parts:
                 r = p.add_run(text)
                 if is_citation:
                     r.font.superscript = True
-                # DON'T set bold
             apply_pfmt(p)
     
     if footnotes:
