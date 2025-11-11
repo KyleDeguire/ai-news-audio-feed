@@ -97,6 +97,18 @@ jobs:
           set -euo pipefail
           python scripts/update_feed.py
       
+      - name: DEBUG - Verify feed.xml was updated
+        shell: bash
+        run: |
+          echo "=== First 30 lines of feed.xml ==="
+          head -30 feed.xml
+          echo ""
+          echo "=== Last build date ==="
+          grep "lastBuildDate" feed.xml
+          echo ""
+          echo "=== First item (should be Nov 10) ==="
+          grep -A 15 "<item>" feed.xml | head -16
+      
       - name: Commit audio, feed, and transcript assets
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
