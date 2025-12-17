@@ -1,4 +1,5 @@
 name: Weekly AI Executive Brief
+
 on:
   schedule:
     - cron: '0 15 * * 1'
@@ -8,27 +9,30 @@ on:
         description: 'Why are you running this manually?'
         required: false
         default: 'manual-run'
+
 permissions:
   contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      
+
       - name: Install deps
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-      
+
       - name: Generate MP3 + transcript JSON/TXT
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -37,12 +41,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "=== Running generator ==="
           python scripts/generate_brief.py
-          ls -lah audio | tail -n +1
-      
+
+          echo ""
+          echo "=== Audio folder listing (newest first) ==="
+          ls -lahtr audio | tail -n +1
+
+          echo ""
+          echo "=== Find newest MP3 and validate ==="
+          LATEST_MP3="$(ls -t audio/ai_news_*.mp3 2>/dev/null | head -1 || true)"
+          if [ -z "$LATEST_MP3" ]; then
+            echo "ERROR: No MP3 was generated in /audio"
+            exit 1
+          fi
+
+          BYTES="$(stat -c%s "$LATEST_MP3" 2>/dev/null || stat -f%z "$LATEST_MP3")"
+          echo "Newest MP3: $LATEST_MP3 ($BYTES bytes)"
+
+          if [ "$BYTES" -lt 50000 ]; then
+            echo "ERROR: MP3 is suspiciously small (<50KB). Likely generation failure."
+            exit 1
+          fi
+
+          echo "OK: MP3 exists and size looks reasonable."
+
       - name: DEBUG - Show JSON content
         shell: bash
         run: |
+          set -euo pipefail
           echo "=== Latest JSON file ==="
           ls -lt audio/ai_news_*.json | head -1
           echo ""
@@ -59,7 +87,7 @@ jobs:
           print(f'Spoken text length: {len(data.get(\"spoken\", \"\"))}')
           print(f'Number of footnotes: {len(data.get(\"footnotes\", []))}')
           "
-      
+
       - name: Compose email HTML + DOCX + subject
         id: compose
         shell: bash
@@ -73,7 +101,7 @@ jobs:
           echo "docx_path=$DOCX_PATH" >> $GITHUB_OUTPUT
           echo "subject_line=$SUBJECT_LINE" >> $GITHUB_OUTPUT
           echo "Prepared -> $HTML_BODY ; $DOCX_PATH ; $SUBJECT_LINE"
-      
+
       - name: Send transcript email
         env:
           SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
@@ -90,35 +118,37 @@ jobs:
           BODY_B64=$(base64 -w 0 "${{ steps.compose.outputs.html_body }}")
           export BODY_B64
           python scripts/send_email.py
-      
+
       - name: Update feed.xml (point enclosure to latest mp3)
         shell: bash
         run: |
           set -euo pipefail
           python scripts/update_feed.py
-      
-      - name: DEBUG - Verify feed.xml was updated
+
+      - name: DEBUG - Verify feed.xml was updated (safe)
         shell: bash
         run: |
+          set -euo pipefail
           echo "=== First 30 lines of feed.xml ==="
-          head -30 feed.xml
+          sed -n '1,30p' feed.xml
           echo ""
           echo "=== Last build date ==="
-          grep "lastBuildDate" feed.xml
+          grep "lastBuildDate" feed.xml || true
           echo ""
-          echo "=== First item (should be today's date) ==="
-          grep -A 15 "<item>" feed.xml | head -16
-      
+          echo "=== First item (bounded, no broken pipe) ==="
+          awk 'BEGIN{p=0} /<item>/{p=1} p{print} /<\/item>/{exit}' feed.xml | sed -n '1,25p'
+
       - name: Stage all changes explicitly
         shell: bash
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add feed.xml
           git add audio/*
           echo "=== Git status after staging ==="
           git status
-      
+
       - name: Commit audio, feed, and transcript assets
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
