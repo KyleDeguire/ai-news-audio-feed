@@ -6,7 +6,7 @@
     <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
     <ns0:link href="https://kyledeguire.github.io/ai-news-audio-feed/feed.xml" rel="self" type="application/rss+xml" />
     <language>en-us</language>
-    <lastBuildDate>Mon, 05 Jan 2026 15:23:03 GMT</lastBuildDate>
+    <lastBuildDate>Mon, 12 Jan 2026 15:24:40 GMT</lastBuildDate>
     <managingEditor>kyledeguire@example.com (Kyle Deguire)</managingEditor>
     <itunes:author>Kyle Deguire</itunes:author>
     <itunes:image href="https://kyledeguire.github.io/ai-news-audio-feed/artwork/cover.jpg" />
@@ -14,6 +14,16 @@
       <itunes:category text="Tech News" />
     </itunes:category>
     <itunes:explicit>false</itunes:explicit>
+    <item>
+      <title>AI Executive Brief - 12 Jan, 2026</title>
+      <description>Executive Briefing: AI Market Trends and Strategic Insights</description>
+      <link>https://kyledeguire.github.io/ai-news-audio-feed/</link>
+      <enclosure url="https://kyledeguire.github.io/ai-news-audio-feed/audio/ai_news_20260112.mp3?t=1768231479" length="3935966" type="audio/mpeg" />
+      <pubDate>Mon, 12 Jan 2026 08:00:00 GMT</pubDate>
+      <guid isPermaLink="false">ai_news_20260112</guid>
+      <itunes:explicit>false</itunes:explicit>
+      <itunes:episodeType>full</itunes:episodeType>
+    </item>
     <item>
       <title>AI Executive Brief - 05 Jan, 2026</title>
       <description>Executive Briefing: AI Market Trends and Strategic Insights</description>
